@@ -1,0 +1,39 @@
+ * Serving Flask app 'app'
+ * Debug mode: on
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.0.51:5000
+[33mPress CTRL+C to quit[0m
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 209-630-776
+Resolving with Playwright (Quality: Auto): https://vidlink.pro/movie/1290821
+📡 Omni-Extraction Mode: https://vidlink.pro/movie/1290821 (Quality: Auto)
+🗨️ Captured Subtitle: https://cca.megafiles.store/c3/8f/c38f03...
+🛡️ Solving Challenge (Desktop)...
+✅ Success: Captured Valid Stream (https://storm.vodvidl.site/proxy/file2%2...)
+192.168.0.236 - - [08/Mar/2026 02:59:44] "POST /resolve HTTP/1.1" 200 -
+ * Detected change in '/Users/abdullahmohd/Desktop/NOVA/backend/app.py', reloading
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 209-630-776
+ * Detected change in '/Users/abdullahmohd/Desktop/NOVA/backend/app.py', reloading
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 209-630-776
+Resolving with Playwright (Quality: Auto): https://vidlink.pro/movie/1290821
+📡 Omni-Extraction Mode: https://vidlink.pro/movie/1290821 (Quality: Auto)
+🗨️ Captured Subtitle: https://cca.megafiles.store/c3/8f/c38f03...
+🛡️ Solving Challenge (Desktop)...
+✅ Success: Captured Valid Stream (https://storm.vodvidl.site/proxy/file2%2...)
+192.168.0.236 - - [08/Mar/2026 03:06:29] "POST /resolve HTTP/1.1" 200 -
+192.168.0.236 - - [08/Mar/2026 03:06:38] "GET /subtitles?tmdbId=1290821&type=movie&languages=EN,AR HTTP/1.1" 200 -
+192.168.0.236 - - [08/Mar/2026 03:06:38] "GET /subtitle/668f1f5653b4476db4436d1a0f71d2ae HTTP/1.1" 200 -
+192.168.0.236 - - [08/Mar/2026 03:06:46] "GET /subtitle/3d0a0e7efcb7403ca4a43320f2aa8a13 HTTP/1.1" 200 -
+/usr/local/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/resource_tracker.py:396: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown: {'/mp-qgnis7pa'}
+  warnings.warn(
+rWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown: {'/mp-r3nqs7h0'}
+  warnings.warn(
+/usr/local/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/resource_tracker.py:396: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown: {'/mp-6lvap7h3'}
+  warnings.warn(
