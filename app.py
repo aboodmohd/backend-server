@@ -329,6 +329,145 @@ def looks_like_subtitle_url(url):
     return any(token in lowered for token in ['.vtt', '.srt', '.ass', '.ssa', 'subtitle', '/sub/', 'captions', 'texttrack'])
 
 
+def normalize_subtitle_entry(candidate_url, label='', provider='embed'):
+    if not candidate_url:
+        return None
+
+    absolute_url = candidate_url.strip()
+    language_name, language_code = infer_subtitle_language_from_label(label, absolute_url)
+    return {
+        'url': absolute_url,
+        'language': language_name,
+        'languageCode': language_code,
+        'provider': provider,
+        'label': label or language_name,
+    }
+
+
+def dedupe_subtitles(items):
+    deduped = []
+    seen = set()
+
+    for item in items or []:
+        if not item or not item.get('url'):
+            continue
+
+        key = item['url'].strip()
+        if key in seen:
+            continue
+
+        seen.add(key)
+        deduped.append(item)
+
+    return deduped
+
+
+def extract_subtitles_from_text(content, base_url=''):
+    if not content:
+        return []
+
+    candidates = []
+    absolute_pattern = re.compile(r'https?://[^"\'\s<>()]+?(?:\.vtt|\.srt|\.ass|\.ssa)(?:\?[^"\'\s<>()]*)?', re.IGNORECASE)
+    relative_pattern = re.compile(r'(["\'])(/[^"\'\s<>()]+?(?:\.vtt|\.srt|\.ass|\.ssa)(?:\?[^"\'\s<>()]*)?)\1', re.IGNORECASE)
+    track_pattern = re.compile(
+        r'<track[^>]+src=["\']([^"\']+)["\'][^>]*?(?:label=["\']([^"\']*)["\'])?[^>]*?>',
+        re.IGNORECASE,
+    )
+    loose_track_pattern = re.compile(
+        r'(?:file|src|url)\s*[:=]\s*["\']([^"\']+?(?:\.vtt|\.srt|\.ass|\.ssa)(?:\?[^"\']*)?)["\'][^\n\r{}]*?(?:label|language|lang|srclang)?\s*[:=]?\s*["\']?([^"\',}\]]*)',
+        re.IGNORECASE,
+    )
+
+    for match in absolute_pattern.finditer(content):
+        candidates.append(normalize_subtitle_entry(match.group(0), provider='embed'))
+
+    if base_url:
+        for match in relative_pattern.finditer(content):
+            candidates.append(normalize_subtitle_entry(urljoin(base_url, match.group(2)), provider='embed'))
+
+    for match in track_pattern.finditer(content):
+        candidate_url = match.group(1)
+        label = match.group(2) or ''
+        if candidate_url:
+            candidates.append(normalize_subtitle_entry(urljoin(base_url, candidate_url), label=label, provider='embed'))
+
+    for match in loose_track_pattern.finditer(content):
+        candidate_url = match.group(1)
+        label = (match.group(2) or '').strip(' :,-')
+        if candidate_url:
+            normalized_url = urljoin(base_url, candidate_url) if base_url and not candidate_url.startswith(('http://', 'https://')) else candidate_url
+            candidates.append(normalize_subtitle_entry(normalized_url, label=label, provider='embed'))
+
+    return dedupe_subtitles(candidates)
+
+
+def extract_subtitles_from_m3u8(content, manifest_url):
+    if not content or '#EXTM3U' not in content:
+        return []
+
+    subtitles = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line.startswith('#EXT-X-MEDIA:') or 'TYPE=SUBTITLES' not in line.upper():
+            continue
+
+        uri_match = re.search(r'URI="([^"]+)"', line, re.IGNORECASE)
+        if not uri_match:
+            continue
+
+        label_match = re.search(r'NAME="([^"]+)"', line, re.IGNORECASE)
+        language_match = re.search(r'LANGUAGE="([^"]+)"', line, re.IGNORECASE)
+        candidate_url = urljoin(manifest_url, uri_match.group(1))
+        label = (label_match.group(1) if label_match else '') or (language_match.group(1) if language_match else '')
+        subtitles.append(normalize_subtitle_entry(candidate_url, label=label, provider='embed'))
+
+    return dedupe_subtitles(subtitles)
+
+
+def fetch_subtitles_from_source(url, headers=None):
+    if not url:
+        return []
+
+    request_headers = {
+        'User-Agent': 'Mozilla/5.0',
+        'Accept': '*/*',
+    }
+    for key, value in (headers or {}).items():
+        if value:
+            request_headers[key] = value
+
+    try:
+        response = requests.get(url, headers=request_headers, timeout=15, verify=False)
+        response.raise_for_status()
+        content_type = response.headers.get('Content-Type', '')
+        body = response.text
+
+        subtitles = extract_subtitles_from_text(body, url)
+        if subtitles:
+            return subtitles
+
+        if is_playlist_response(url, content_type, body):
+            return extract_subtitles_from_m3u8(body, url)
+    except Exception as exc:
+        print(f"⚠️ Subtitle source scan failed for {short_url(url)}: {exc}")
+
+    return []
+
+
+def enrich_extracted_subtitles(stream_url, stream_headers, embed_url, existing_subtitles):
+    collected = list(existing_subtitles or [])
+
+    collected.extend(fetch_subtitles_from_source(embed_url, {'Referer': embed_url}))
+
+    source_headers = {
+        'Referer': stream_headers.get('Referer') or stream_headers.get('referer') or embed_url,
+        'Cookie': stream_headers.get('Cookie') or stream_headers.get('cookie') or '',
+    }
+    collected.extend(fetch_subtitles_from_source(stream_url, source_headers))
+
+    return dedupe_subtitles(collected)
+
+
 def extract_subtitle_candidates_from_json_payload(payload):
     candidates = []
 
@@ -918,25 +1057,29 @@ def proxy(_name=None):
 def resolve():
     try:
         preferred_quality = 'Auto'
+        providers = []
         if request.method == 'POST':
             data = request.json or {}
             url = data.get('url')
             preferred_quality = data.get('quality', 'Auto')
+            providers = data.get('providers') or []
         else:
             url = request.args.get('url')
             preferred_quality = request.args.get('quality', 'Auto')
+            providers = request.args.getlist('providers')
 
         if not url:
             return jsonify({"success": False, "error": "No url provided"}), 400
 
         provider = detect_provider(url)
-        log_provider(provider, f"resolve request quality={preferred_quality} url={short_url(url)}")
+        log_provider(provider, f"resolve request quality={preferred_quality} providers={providers} url={short_url(url)}")
 
         print(f"Resolving with Playwright (Quality: {preferred_quality}): {url}")
         extracted = extract_stream_with_playwright(url, preferred_quality)
         
         curr_url = extracted.get('url')
         curr_headers = extracted.get('headers', {})
+        extracted['subtitles'] = enrich_extracted_subtitles(curr_url, curr_headers, url, extracted.get('subtitles', []))
         
         # STRICT VALIDATION: Ensure we actually found a video file, not an HTML page
         is_valid_video = probe_stream_candidate(curr_url, curr_headers)
@@ -964,6 +1107,7 @@ def resolve():
                 "success": True,
                 "url": proxy_url,
                 "headers": curr_headers,
+                "provider": provider,
                 "subtitles": extracted.get('subtitles', [])
             })
 
@@ -971,6 +1115,7 @@ def resolve():
             "success": True,
             "url": curr_url,
             "headers": curr_headers,
+            "provider": provider,
             "subtitles": extracted.get('subtitles', [])
         })
     except Exception as e:
@@ -981,6 +1126,7 @@ def resolve():
 
 @app.route('/subtitles', methods=['GET'])
 def subtitles():
+    embed_url = request.args.get('embedUrl')
     tmdb_id = request.args.get('tmdbId')
     media_type = request.args.get('type', 'movie')
     season = request.args.get('season')
@@ -988,8 +1134,20 @@ def subtitles():
     languages = request.args.get('languages', 'EN,AR')
     title = request.args.get('title')
 
+    if embed_url:
+        try:
+            subtitles = dedupe_subtitles(fetch_subtitles_from_source(embed_url, {'Referer': embed_url}))
+            return jsonify({
+                "success": True,
+                "provider": 'embed',
+                "subtitles": subtitles,
+            })
+        except Exception as exc:
+            print(f"❌ Embed subtitle lookup failed: {exc}")
+            return jsonify({"success": False, "error": str(exc), "subtitles": []}), 500
+
     if not tmdb_id:
-        return jsonify({"success": False, "error": "tmdbId is required", "subtitles": []}), 400
+        return jsonify({"success": False, "error": "tmdbId or embedUrl is required", "subtitles": []}), 400
 
     try:
         subtitle_results = []
