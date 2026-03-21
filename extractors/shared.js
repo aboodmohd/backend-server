@@ -1,9 +1,14 @@
 const cheerio = require('cheerio');
 const { chromium } = require('playwright');
-const { absoluteUrl, extractUrls, fetchJson, fetchText, isMediaUrl, isSubtitleUrl } = require('../utils/request');
+const { absoluteUrl, extractUrls, fetchJson, fetchText, isMediaUrl, isSubtitleUrl, MEDIA_URL_REGEX } = require('../utils/request');
 
-const STREAM_EXTENSIONS = ['.m3u8', '.mp4', '.m3u', '.mpd'];
+const STREAM_EXTENSIONS = ['.m3u8', '.mp4', '.m3u', '.mpd', '.mkv', '.webm'];
 const SUBTITLE_EXTENSIONS = ['.vtt', '.srt', '.ass'];
+const PLAYER_CONFIG_PATTERNS = [
+  /(?:file|src)\s*[:=]\s*["'](https?:\/\/[^"']+|\/[^"']+)["']/gi,
+  /(?:sources|source)\s*[:=]\s*\[[^\]]*(https?:\/\/[^"']+|\/[^"']+)[^\]]*\]/gi,
+  /(?:hls|dash|stream|video)\s*[:=]\s*["'](https?:\/\/[^"']+|\/[^"']+)["']/gi,
+];
 
 let browserPromise = null;
 
@@ -58,12 +63,40 @@ function pickBestStream(candidates) {
   const uniqueCandidates = [...new Set(candidates.filter(Boolean))];
 
   uniqueCandidates.sort((left, right) => {
-    const leftScore = left.includes('.m3u8') ? 0 : 1;
-    const rightScore = right.includes('.m3u8') ? 0 : 1;
+    const scoreCandidate = (candidate) => {
+      if (candidate.includes('.m3u8')) return 0;
+      if (candidate.includes('.mpd')) return 1;
+      if (candidate.includes('.mp4')) return 2;
+      if (candidate.includes('.webm')) return 3;
+      if (candidate.includes('.mkv')) return 4;
+      return 5;
+    };
+    const leftScore = scoreCandidate(left);
+    const rightScore = scoreCandidate(right);
     return leftScore - rightScore;
   });
 
   return uniqueCandidates[0] || null;
+}
+
+function collectPlayerConfigCandidates(input, baseUrl) {
+  const html = String(input || '');
+  const streamCandidates = [];
+
+  for (const pattern of PLAYER_CONFIG_PATTERNS) {
+    pattern.lastIndex = 0;
+    let match = pattern.exec(html);
+
+    while (match) {
+      const candidate = absoluteUrl(baseUrl, match[1]);
+      if (candidate && isMediaUrl(candidate)) {
+        streamCandidates.push(candidate);
+      }
+      match = pattern.exec(html);
+    }
+  }
+
+  return streamCandidates;
 }
 
 function buildCookieHeader(cookies = []) {
@@ -92,7 +125,7 @@ function collectFrameUrls(page, currentUrl) {
 
 function collectDomCandidates(html, baseUrl) {
   const $ = cheerio.load(html);
-  const streamCandidates = [];
+  const streamCandidates = collectPlayerConfigCandidates(html, baseUrl);
   const subtitleCandidates = [];
   const iframeCandidates = [];
 
@@ -146,7 +179,7 @@ function collectDomCandidates(html, baseUrl) {
 
 function scanPayloadForMedia(payload, baseUrl) {
   const textPayload = typeof payload === 'string' ? payload : JSON.stringify(payload);
-  const urls = extractUrls(textPayload, baseUrl);
+  const urls = [...extractUrls(textPayload, baseUrl), ...collectPlayerConfigCandidates(textPayload, baseUrl)];
   const stream = pickBestStream(urls.filter(isMediaUrl));
   const subtitles = dedupeSubtitles(
     urls.filter(isSubtitleUrl).map((url, index) => ({
@@ -163,6 +196,15 @@ function scanPayloadForMedia(payload, baseUrl) {
 }
 
 async function extractDirectMedia(url, scope) {
+  if (MEDIA_URL_REGEX.test(url)) {
+    logStep(scope, 'input URL is already a direct media stream');
+    return {
+      stream: url,
+      subtitles: [],
+      iframes: [],
+    };
+  }
+
   const html = await fetchText(url, { headers: { Referer: url } });
 
   if (/sorry, you have been blocked|cloudflare ray id|access denied/i.test(html)) {

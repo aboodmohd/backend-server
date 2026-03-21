@@ -13,6 +13,13 @@ const client = axios.create({
   headers: DEFAULT_HEADERS,
 });
 
+const MEDIA_EXTENSION_PATTERN = '(?:m3u8|mp4|mpd|mkv|webm|m3u)';
+const MEDIA_URL_REGEX = new RegExp(`\\.(${MEDIA_EXTENSION_PATTERN})(?:$|[?#])`, 'i');
+const EXTRACT_URLS_REGEX = new RegExp(
+  `(https?:\\/\\/[^"'\\s<>()]+|\\/[^"'\\s<>()]+\\.${MEDIA_EXTENSION_PATTERN}(?:\\?[^"'\\s<>()]*)?|\\/[^"'\\s<>()]+\\.(?:vtt|srt|ass)(?:\\?[^"'\\s<>()]*)?)`,
+  'gi',
+);
+
 function absoluteUrl(baseUrl, candidate) {
   if (!candidate) {
     return null;
@@ -30,7 +37,7 @@ function getHostname(inputUrl) {
 }
 
 function isMediaUrl(candidate) {
-  return /\.(m3u8|mp4|mpd)(?:$|\?)/i.test(candidate || '');
+  return MEDIA_URL_REGEX.test(candidate || '');
 }
 
 function isSubtitleUrl(candidate) {
@@ -39,8 +46,7 @@ function isSubtitleUrl(candidate) {
 
 function extractUrls(input, baseUrl) {
   const results = new Set();
-  const pattern = /(https?:\/\/[^"'\s<>()]+|\/[^"'\s<>()]+\.(?:m3u8|mp4|mpd|vtt|srt|ass)(?:\?[^"'\s<>()]*)?)/gi;
-  const matches = String(input || '').match(pattern) || [];
+  const matches = String(input || '').match(EXTRACT_URLS_REGEX) || [];
 
   for (const match of matches) {
     const normalized = absoluteUrl(baseUrl, match.replace(/\\u0026/g, '&').replace(/\\\//g, '/'));
@@ -84,4 +90,5 @@ module.exports = {
   getHostname,
   isMediaUrl,
   isSubtitleUrl,
+  MEDIA_URL_REGEX,
 };
