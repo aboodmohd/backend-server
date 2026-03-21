@@ -100,7 +100,7 @@ function collectPlayerConfigCandidates(input, baseUrl) {
 }
 
 function shouldTraceNetworkCandidate(source, candidate, resourceType) {
-  if (source !== 'vidlink') {
+  if (!['vidlink', 'vidfast'].includes(source)) {
     return false;
   }
 
@@ -113,7 +113,7 @@ function shouldTraceNetworkCandidate(source, candidate, resourceType) {
   }
 
   if (resourceType && ['fetch', 'xhr', 'document', 'script'].includes(resourceType)) {
-    return /(?:api|embed|source|stream|playlist|manifest|m3u8|videostr|vodvidl)/i.test(candidate);
+    return /(?:api|embed|source|stream|playlist|manifest|m3u8|videostr|vodvidl|vidfast|jwplayer|player)/i.test(candidate);
   }
 
   return false;
