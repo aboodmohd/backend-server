@@ -123,9 +123,13 @@ function parseVidlinkDescriptor(targetUrl) {
   try {
     const parsedUrl = new URL(targetUrl);
     const segments = parsedUrl.pathname.split('/').filter(Boolean);
-    const [type, tmdbId] = segments;
+    const [type, tmdbId, season, episode] = segments;
 
     if (!tmdbId || !['movie', 'tv'].includes(type)) {
+      return null;
+    }
+
+    if (type === 'tv' && (!season || !episode)) {
       return null;
     }
 
@@ -133,6 +137,8 @@ function parseVidlinkDescriptor(targetUrl) {
       origin: parsedUrl.origin,
       type,
       tmdbId,
+      season: season || null,
+      episode: episode || null,
     };
   } catch {
     return null;
@@ -149,7 +155,7 @@ async function tryVidlinkBrowserApi(page, targetUrl) {
   try {
     await page.waitForFunction(() => typeof window.getAdv === 'function', { timeout: 4000 });
 
-    const response = await page.evaluate(async ({ type, tmdbId }) => {
+    const response = await page.evaluate(async ({ type, tmdbId, season, episode }) => {
       const rawToken = typeof window.getAdv === 'function' ? window.getAdv(String(tmdbId)) : null;
 
       if (!rawToken) {
@@ -157,19 +163,39 @@ async function tryVidlinkBrowserApi(page, targetUrl) {
       }
 
       const tokenData = Array.isArray(rawToken) ? rawToken : [rawToken, null, false];
-      const apiPath = `/api/b/${type}/${tokenData[0]}?multiLang=${tokenData[2] === true ? 1 : 0}`;
-      const apiResponse = await fetch(apiPath, {
-        headers: {
-          Accept: 'application/json, text/plain, */*',
-          'X-Requested-With': 'XMLHttpRequest',
-        },
-      });
+      const multiLang = tokenData[2] === true ? 1 : 0;
+      const apiPaths = type === 'tv'
+        ? [
+          `/api/b/${type}/${tokenData[0]}/${season}/${episode}?multiLang=${multiLang}`,
+          `/api/b/${type}/${tokenData[0]}?multiLang=${multiLang}`,
+        ]
+        : [`/api/b/${type}/${tokenData[0]}?multiLang=${multiLang}`];
+
+      for (const apiPath of apiPaths) {
+        const apiResponse = await fetch(apiPath, {
+          headers: {
+            Accept: 'application/json, text/plain, */*',
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+        });
+
+        const payload = await apiResponse.text();
+
+        if (apiResponse.ok) {
+          return {
+            apiPath,
+            ok: true,
+            status: apiResponse.status,
+            payload,
+          };
+        }
+      }
 
       return {
-        apiPath,
-        ok: apiResponse.ok,
-        status: apiResponse.status,
-        payload: await apiResponse.text(),
+        apiPath: apiPaths[apiPaths.length - 1],
+        ok: false,
+        status: 404,
+        payload: null,
       };
     }, descriptor);
 
