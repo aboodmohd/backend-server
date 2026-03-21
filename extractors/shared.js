@@ -211,9 +211,11 @@ async function tryApiRequest(requestConfig, scope) {
 
 async function getBrowser() {
   if (!browserPromise) {
+    const headless = process.env.PLAYWRIGHT_HEADLESS !== 'false';
+
     browserPromise = chromium.launch({
-      headless: process.env.PLAYWRIGHT_HEADLESS === 'true',
-      args: ['--disable-dev-shm-usage', '--no-sandbox'],
+      headless,
+      args: ['--disable-dev-shm-usage', '--disable-setuid-sandbox', '--no-sandbox'],
     });
   }
 
