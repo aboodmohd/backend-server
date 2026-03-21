@@ -12,6 +12,8 @@
     "cheerio": "^1.1.2",
     "express": "^5.1.0",
     "node-cache": "^5.1.2",
-    "playwright": "^1.55.1"
+    "playwright": "^1.55.1",
+    "playwright-extra": "^4.3.6",
+    "playwright-extra-plugin-stealth": "^0.0.1"
   }
 }

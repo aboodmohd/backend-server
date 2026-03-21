@@ -1,6 +1,12 @@
 const cheerio = require('cheerio');
-const { chromium } = require('playwright');
+const { chromium: playwrightChromium } = require('playwright');
+const { addExtra } = require('playwright-extra');
+const StealthPlugin = require('playwright-extra-plugin-stealth');
 const { absoluteUrl, extractUrls, fetchJson, fetchText, isMediaUrl, isSubtitleUrl, MEDIA_URL_REGEX } = require('../utils/request');
+
+const chromium = addExtra(playwrightChromium);
+
+chromium.use(StealthPlugin());
 
 const STREAM_EXTENSIONS = ['.m3u8', '.mp4', '.m3u', '.mpd', '.mkv', '.webm'];
 const SUBTITLE_EXTENSIONS = ['.vtt', '.srt', '.ass'];
@@ -411,7 +417,12 @@ async function getBrowser() {
 
     browserPromise = chromium.launch({
       headless,
-      args: ['--disable-dev-shm-usage', '--disable-setuid-sandbox', '--no-sandbox'],
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-dev-shm-usage',
+        '--disable-setuid-sandbox',
+        '--no-sandbox',
+      ],
     });
   }
 
@@ -423,9 +434,11 @@ async function browserFallback(url, source) {
 
   const browser = await getBrowser();
   const browserUserAgent =
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36';
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
   const context = await browser.newContext({
+    locale: 'en-US',
     userAgent: browserUserAgent,
+    viewport: { width: 1366, height: 768 },
   });
   const page = await context.newPage();
   const streamCandidates = new Set();
