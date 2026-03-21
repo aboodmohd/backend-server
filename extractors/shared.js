@@ -145,6 +145,30 @@ function parseVidlinkDescriptor(targetUrl) {
   }
 }
 
+function extractVidlinkPayload(payload, baseUrl) {
+  try {
+    const parsed = JSON.parse(payload);
+    const playlist = absoluteUrl(baseUrl, parsed?.stream?.playlist || parsed?.stream?.url || parsed?.playlist || parsed?.url);
+    const subtitles = dedupeSubtitles(
+      (parsed?.subtitles || parsed?.tracks || parsed?.captions || []).map((track, index) => ({
+        lang: track?.lang || track?.label || track?.srclang || `track-${index + 1}`,
+        url: absoluteUrl(baseUrl, track?.url || track?.file || track?.src),
+      })),
+    );
+
+    if (!playlist) {
+      return null;
+    }
+
+    return {
+      stream: playlist,
+      subtitles,
+    };
+  } catch {
+    return scanPayloadForMedia(payload, baseUrl);
+  }
+}
+
 async function tryVidlinkBrowserApi(page, targetUrl) {
   const descriptor = parseVidlinkDescriptor(targetUrl);
 
@@ -213,7 +237,7 @@ async function tryVidlinkBrowserApi(page, targetUrl) {
       return null;
     }
 
-    const result = scanPayloadForMedia(response.payload, endpoint);
+    const result = extractVidlinkPayload(response.payload, endpoint);
 
     if (!result) {
       return null;
