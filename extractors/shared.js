@@ -99,6 +99,26 @@ function collectPlayerConfigCandidates(input, baseUrl) {
   return streamCandidates;
 }
 
+function shouldTraceNetworkCandidate(source, candidate, resourceType) {
+  if (source !== 'vidlink') {
+    return false;
+  }
+
+  if (!candidate || candidate.startsWith('data:')) {
+    return false;
+  }
+
+  if (isMediaUrl(candidate)) {
+    return true;
+  }
+
+  if (resourceType && ['fetch', 'xhr', 'document', 'script'].includes(resourceType)) {
+    return /(?:api|embed|source|stream|playlist|manifest|m3u8|videostr|vodvidl)/i.test(candidate);
+  }
+
+  return false;
+}
+
 function buildCookieHeader(cookies = []) {
   return cookies
     .filter((cookie) => cookie && cookie.name)
@@ -278,6 +298,7 @@ async function browserFallback(url, source) {
   const mediaRequestHeaders = new Map();
   const subtitles = [];
   const visitedUrls = new Set();
+  const tracedNetworkUrls = new Set();
   let resolveStreamDetected;
   const streamDetected = new Promise((resolve) => {
     resolveStreamDetected = resolve;
@@ -320,6 +341,16 @@ async function browserFallback(url, source) {
 
   const captureRequest = (request) => {
     const candidate = request.url();
+    const resourceType = request.resourceType();
+
+    if (shouldTraceNetworkCandidate(source, candidate, resourceType) && !tracedNetworkUrls.has(`request:${candidate}`)) {
+      tracedNetworkUrls.add(`request:${candidate}`);
+      logStep(source, 'browser network request', {
+        resourceType,
+        method: request.method(),
+        url: candidate,
+      });
+    }
 
     if (!isMediaUrl(candidate)) {
       return;
@@ -330,8 +361,46 @@ async function browserFallback(url, source) {
     signalStreamDetected();
   };
 
+  const captureResponse = async (response) => {
+    const candidate = response.url();
+    captureUrl(candidate);
+
+    const request = response.request();
+    const resourceType = request.resourceType();
+
+    if (!shouldTraceNetworkCandidate(source, candidate, resourceType) || tracedNetworkUrls.has(`response:${candidate}`)) {
+      return;
+    }
+
+    tracedNetworkUrls.add(`response:${candidate}`);
+
+    const contentType = response.headers()['content-type'] || '';
+    const details = {
+      resourceType,
+      status: response.status(),
+      contentType,
+      url: candidate,
+    };
+
+    if ((resourceType === 'fetch' || resourceType === 'xhr') && /json|javascript|text/i.test(contentType)) {
+      try {
+        const text = await response.text();
+        const preview = text.replace(/\s+/g, ' ').slice(0, 220);
+        if (preview) {
+          details.preview = preview;
+        }
+      } catch {
+        // Ignore preview failures for traced responses.
+      }
+    }
+
+    logStep(source, 'browser network response', details);
+  };
+
   page.on('request', captureRequest);
-  page.on('response', (response) => captureUrl(response.url()));
+  page.on('response', (response) => {
+    captureResponse(response).catch(() => {});
+  });
 
   const attemptPlayback = async (targetPage) => {
     const selectors = [
