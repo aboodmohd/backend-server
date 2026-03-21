@@ -119,6 +119,90 @@ function shouldTraceNetworkCandidate(source, candidate, resourceType) {
   return false;
 }
 
+function parseVidlinkDescriptor(targetUrl) {
+  try {
+    const parsedUrl = new URL(targetUrl);
+    const segments = parsedUrl.pathname.split('/').filter(Boolean);
+    const [type, tmdbId] = segments;
+
+    if (!tmdbId || !['movie', 'tv'].includes(type)) {
+      return null;
+    }
+
+    return {
+      origin: parsedUrl.origin,
+      type,
+      tmdbId,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function tryVidlinkBrowserApi(page, targetUrl) {
+  const descriptor = parseVidlinkDescriptor(targetUrl);
+
+  if (!descriptor) {
+    return null;
+  }
+
+  try {
+    await page.waitForFunction(() => typeof window.getAdv === 'function', { timeout: 4000 });
+
+    const response = await page.evaluate(async ({ type, tmdbId }) => {
+      const rawToken = typeof window.getAdv === 'function' ? window.getAdv(String(tmdbId)) : null;
+
+      if (!rawToken) {
+        return null;
+      }
+
+      const tokenData = Array.isArray(rawToken) ? rawToken : [rawToken, null, false];
+      const apiPath = `/api/b/${type}/${tokenData[0]}?multiLang=${tokenData[2] === true ? 1 : 0}`;
+      const apiResponse = await fetch(apiPath, {
+        headers: {
+          Accept: 'application/json, text/plain, */*',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+      });
+
+      return {
+        apiPath,
+        ok: apiResponse.ok,
+        status: apiResponse.status,
+        payload: await apiResponse.text(),
+      };
+    }, descriptor);
+
+    if (!response) {
+      return null;
+    }
+
+    const endpoint = new URL(response.apiPath, descriptor.origin).toString();
+
+    if (!response.ok) {
+      logStep('vidlink', 'browser bootstrap API failed', {
+        endpoint,
+        status: response.status,
+      });
+      return null;
+    }
+
+    const result = scanPayloadForMedia(response.payload, endpoint);
+
+    if (!result) {
+      return null;
+    }
+
+    logStep('vidlink', 'provider API returned media', { endpoint, via: 'browser-bootstrap' });
+    return result;
+  } catch (error) {
+    logStep('vidlink', 'browser bootstrap API failed', {
+      message: error.message,
+    });
+    return null;
+  }
+}
+
 function buildCookieHeader(cookies = []) {
   return cookies
     .filter((cookie) => cookie && cookie.name)
@@ -501,6 +585,20 @@ async function browserFallback(url, source) {
     logStep(source, 'browser navigating', { depth, url: targetUrl });
 
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+
+    if (source === 'vidlink') {
+      const vidlinkApiResult = await tryVidlinkBrowserApi(page, targetUrl);
+
+      if (vidlinkApiResult?.stream) {
+        streamCandidates.add(vidlinkApiResult.stream);
+        for (const subtitle of vidlinkApiResult.subtitles || []) {
+          subtitles.push(subtitle);
+        }
+        signalStreamDetected();
+        return;
+      }
+    }
+
     await waitForStream(1500);
     await attemptPlayback(page);
     await waitForStream(1500);
