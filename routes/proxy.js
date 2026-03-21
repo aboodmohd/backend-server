@@ -211,6 +211,7 @@ async function handleProxy(req, res, next) {
 }
 
 router.get('/', handleProxy);
+router.get('/*path', handleProxy);
 router.get('/:filename', handleProxy);
 
 module.exports = {
