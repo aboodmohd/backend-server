@@ -1,7 +1,7 @@
 const cheerio = require('cheerio');
 const { chromium: playwrightChromium } = require('playwright');
 const { addExtra } = require('playwright-extra');
-const StealthPlugin = require('playwright-extra-plugin-stealth');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { absoluteUrl, extractUrls, fetchJson, fetchText, isMediaUrl, isSubtitleUrl, MEDIA_URL_REGEX } = require('../utils/request');
 
 const chromium = addExtra(playwrightChromium);
