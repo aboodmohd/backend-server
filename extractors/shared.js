@@ -259,6 +259,70 @@ async function tryVidlinkBrowserApi(page, targetUrl) {
   }
 }
 
+async function triggerVidfastPlayback(page) {
+  try {
+    await page.waitForSelector('video', { timeout: 5000 });
+  } catch {
+    return;
+  }
+
+  try {
+    await page.evaluate(() => {
+      const clickIfVisible = (element) => {
+        if (!element) {
+          return false;
+        }
+
+        const rect = element.getBoundingClientRect();
+        if (!rect.width || !rect.height) {
+          return false;
+        }
+
+        element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+        element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        if (typeof element.click === 'function') {
+          element.click();
+        }
+        return true;
+      };
+
+      const video = document.querySelector('video');
+      if (video) {
+        video.muted = true;
+        video.autoplay = true;
+        video.controls = true;
+        video.playsInline = true;
+        video.setAttribute('muted', '');
+        video.setAttribute('autoplay', '');
+        video.setAttribute('playsinline', '');
+        clickIfVisible(video);
+        if (typeof video.load === 'function') {
+          video.load();
+        }
+        if (typeof video.play === 'function') {
+          video.play().catch(() => {});
+        }
+      }
+
+      const buttonCandidates = [...document.querySelectorAll('button, [role="button"], [class*="play"], [class*="player"] button')];
+      for (const candidate of buttonCandidates) {
+        const label = (candidate.innerText || candidate.getAttribute('aria-label') || candidate.getAttribute('title') || '').toLowerCase();
+        if (!label || /play|watch|start|resume/.test(label)) {
+          clickIfVisible(candidate);
+        }
+      }
+    });
+
+    await page.keyboard.press('Space').catch(() => {});
+    await page.keyboard.press('KeyK').catch(() => {});
+    await page.mouse.click(683, 384, { delay: 100 }).catch(() => {});
+  } catch {
+    // Ignore vidfast bootstrap interaction failures.
+  }
+}
+
 function buildCookieHeader(cookies = []) {
   return cookies
     .filter((cookie) => cookie && cookie.name)
@@ -662,12 +726,16 @@ async function browserFallback(url, source) {
       }
     }
 
+    if (source === 'vidfast') {
+      await triggerVidfastPlayback(page);
+    }
+
     await waitForStream(1500);
     await attemptPlayback(page);
     await waitForStream(1500);
     await clickHotspots(page);
     await interactWithFrames();
-    await waitForStream(2500);
+    await waitForStream(source === 'vidfast' ? 5000 : 2500);
 
     if (pickBestStream([...streamCandidates])) {
       return;
@@ -694,7 +762,7 @@ async function browserFallback(url, source) {
 
   try {
     await navigateRecursive(url);
-    await waitForStream(2000);
+    await waitForStream(source === 'vidfast' ? 5000 : 2000);
 
     const stream = pickBestStream([...streamCandidates]);
 
