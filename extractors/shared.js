@@ -236,6 +236,27 @@ async function browserFallback(url, source) {
   const mediaRequestHeaders = new Map();
   const subtitles = [];
   const visitedUrls = new Set();
+  let resolveStreamDetected;
+  const streamDetected = new Promise((resolve) => {
+    resolveStreamDetected = resolve;
+  });
+
+  const signalStreamDetected = () => {
+    if (pickBestStream([...streamCandidates])) {
+      resolveStreamDetected();
+    }
+  };
+
+  const waitForStream = async (timeoutMs) => {
+    if (pickBestStream([...streamCandidates])) {
+      return;
+    }
+
+    await Promise.race([
+      streamDetected,
+      new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+    ]);
+  };
 
   const captureUrl = (candidate) => {
     if (!candidate) {
@@ -244,6 +265,7 @@ async function browserFallback(url, source) {
 
     if (isMediaUrl(candidate)) {
       streamCandidates.add(candidate);
+      signalStreamDetected();
     }
 
     if (isSubtitleUrl(candidate)) {
@@ -263,6 +285,7 @@ async function browserFallback(url, source) {
 
     mediaRequestHeaders.set(candidate, request.headers());
     streamCandidates.add(candidate);
+    signalStreamDetected();
   };
 
   page.on('request', captureRequest);
@@ -367,11 +390,12 @@ async function browserFallback(url, source) {
     logStep(source, 'browser navigating', { depth, url: targetUrl });
 
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    await page.waitForTimeout(4000);
+    await waitForStream(1500);
     await attemptPlayback(page);
+    await waitForStream(1500);
     await clickHotspots(page);
     await interactWithFrames();
-    await page.waitForTimeout(3000);
+    await waitForStream(2500);
 
     if (pickBestStream([...streamCandidates])) {
       return;
@@ -398,7 +422,7 @@ async function browserFallback(url, source) {
 
   try {
     await navigateRecursive(url);
-    await page.waitForTimeout(5000);
+    await waitForStream(2000);
 
     const stream = pickBestStream([...streamCandidates]);
 
