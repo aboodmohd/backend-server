@@ -175,6 +175,23 @@ function extractVidlinkPayload(payload, baseUrl) {
   }
 }
 
+function parseVidfastFlightBootstrap(html, baseUrl) {
+  const text = String(html || '');
+  const match = text.match(/"en":"([^"]+)"[^]*?"host":"([^"]+)"[^]*?"id":"([^"]+)"[^]*?"autoPlay":(true|false)/i);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    en: match[1],
+    host: match[2],
+    id: match[3],
+    autoPlay: match[4] === 'true',
+    url: baseUrl,
+  };
+}
+
 async function tryVidlinkBrowserApi(page, targetUrl) {
   const descriptor = parseVidlinkDescriptor(targetUrl);
 
@@ -320,6 +337,140 @@ async function triggerVidfastPlayback(page) {
     await page.mouse.click(683, 384, { delay: 100 }).catch(() => {});
   } catch {
     // Ignore vidfast bootstrap interaction failures.
+  }
+}
+
+async function installVidfastCapture(page) {
+  await page.addInitScript(() => {
+    const store = {
+      urls: [],
+      events: [],
+      bootstrap: [],
+    };
+
+    const pushUnique = (bucket, value) => {
+      if (!value || bucket.includes(value)) {
+        return;
+      }
+      bucket.push(value);
+    };
+
+    const captureUrl = (value) => {
+      if (typeof value === 'string' && value) {
+        pushUnique(store.urls, value);
+      }
+    };
+
+    const captureEvent = (type, value) => {
+      if (!value) {
+        return;
+      }
+      pushUnique(store.events, `${type}:${String(value).slice(0, 400)}`);
+    };
+
+    const parseFlightChunk = (payload) => {
+      if (typeof payload !== 'string' || !payload.includes('"en":"')) {
+        return;
+      }
+      const match = payload.match(/"en":"([^"]+)"[^]*?"host":"([^"]+)"[^]*?"id":"([^"]+)"/i);
+      if (match) {
+        pushUnique(store.bootstrap, JSON.stringify({ en: match[1], host: match[2], id: match[3] }));
+      }
+    };
+
+    Object.defineProperty(window, '__open_capture__', {
+      value: store,
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    });
+
+    const originalFetch = window.fetch;
+    window.fetch = async (...args) => {
+      captureUrl(args[0] && typeof args[0] === 'object' ? args[0].url : args[0]);
+      return originalFetch.apply(window, args);
+    };
+
+    const originalOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function open(method, url, ...rest) {
+      captureUrl(url);
+      return originalOpen.call(this, method, url, ...rest);
+    };
+
+    const originalSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function send(body) {
+      if (typeof body === 'string') {
+        captureEvent('xhr-body', body);
+      }
+      return originalSend.call(this, body);
+    };
+
+    const originalSetAttribute = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function setAttribute(name, value) {
+      if (name === 'src' || name === 'href') {
+        captureUrl(value);
+      }
+      return originalSetAttribute.call(this, name, value);
+    };
+
+    const mediaDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+    if (mediaDescriptor && mediaDescriptor.set) {
+      Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+        configurable: true,
+        enumerable: mediaDescriptor.enumerable,
+        get: mediaDescriptor.get,
+        set(value) {
+          captureUrl(value);
+          return mediaDescriptor.set.call(this, value);
+        },
+      });
+    }
+
+    const originalPostMessage = window.postMessage;
+    window.postMessage = function postMessage(message, targetOrigin, transfer) {
+      if (typeof message === 'string') {
+        captureEvent('postMessage', message);
+      }
+      return originalPostMessage.call(window, message, targetOrigin, transfer);
+    };
+
+    const originalSetItem = window.localStorage.setItem.bind(window.localStorage);
+    window.localStorage.setItem = (key, value) => {
+      if (typeof value === 'string') {
+        captureEvent(`localStorage:${key}`, value);
+      }
+      return originalSetItem(key, value);
+    };
+
+    const nextFlight = window.self.__next_f = window.self.__next_f || [];
+    const originalPush = nextFlight.push.bind(nextFlight);
+    nextFlight.push = (...entries) => {
+      for (const entry of entries) {
+        if (Array.isArray(entry) && typeof entry[1] === 'string') {
+          parseFlightChunk(entry[1]);
+        }
+      }
+      return originalPush(...entries);
+    };
+  });
+}
+
+async function collectVidfastCapture(page, currentUrl) {
+  try {
+    return await page.evaluate((baseUrl) => {
+      const store = window.__open_capture__ || { urls: [], events: [], bootstrap: [] };
+      const html = document.documentElement ? document.documentElement.outerHTML : '';
+      return {
+        urls: store.urls || [],
+        events: store.events || [],
+        bootstrap: store.bootstrap || [],
+        html,
+        title: document.title || '',
+        baseUrl,
+      };
+    }, currentUrl);
+  } catch {
+    return null;
   }
 }
 
@@ -505,6 +656,11 @@ async function browserFallback(url, source) {
     viewport: { width: 1366, height: 768 },
   });
   const page = await context.newPage();
+
+  if (source === 'vidfast') {
+    await installVidfastCapture(page);
+  }
+
   const streamCandidates = new Set();
   const mediaRequestHeaders = new Map();
   const subtitles = [];
@@ -736,6 +892,44 @@ async function browserFallback(url, source) {
     await clickHotspots(page);
     await interactWithFrames();
     await waitForStream(source === 'vidfast' ? 5000 : 2500);
+
+    if (source === 'vidfast') {
+      const capture = await collectVidfastCapture(page, targetUrl);
+
+      if (capture?.html) {
+        const bootstrap = parseVidfastFlightBootstrap(capture.html, targetUrl);
+        if (bootstrap) {
+          logStep(source, 'vidfast bootstrap discovered', bootstrap);
+        }
+      }
+
+      for (const candidate of capture?.urls || []) {
+        captureUrl(candidate);
+      }
+
+      for (const event of capture?.events || []) {
+        const extracted = extractUrls(event, targetUrl);
+        for (const candidate of extracted) {
+          captureUrl(candidate);
+        }
+      }
+
+      for (const entry of capture?.bootstrap || []) {
+        const extracted = extractUrls(entry, targetUrl);
+        for (const candidate of extracted) {
+          captureUrl(candidate);
+        }
+      }
+
+      const htmlResult = scanPayloadForMedia(capture?.html || '', targetUrl);
+      if (htmlResult?.stream) {
+        streamCandidates.add(htmlResult.stream);
+        for (const subtitle of htmlResult.subtitles || []) {
+          subtitles.push(subtitle);
+        }
+        signalStreamDetected();
+      }
+    }
 
     if (pickBestStream([...streamCandidates])) {
       return;
