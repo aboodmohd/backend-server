@@ -469,6 +469,38 @@ async function installVidfastCapture(page) {
   });
 }
 
+async function installVidfastEnvironment(page) {
+  await page.addInitScript(() => {
+    try {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    } catch {}
+
+    try {
+      Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+    } catch {}
+
+    try {
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    } catch {}
+
+    try {
+      Object.defineProperty(document, 'referrer', { get: () => 'https://vidfast.pro/' });
+    } catch {}
+
+    try {
+      Object.defineProperty(window, 'chrome', {
+        get: () => ({ runtime: {}, app: {} }),
+      });
+    } catch {}
+
+    try {
+      window.localStorage.setItem('server', 'auto');
+      window.localStorage.setItem('preferredServer', 'auto');
+      window.localStorage.setItem('player:server', 'auto');
+    } catch {}
+  });
+}
+
 async function installVidfastChunkPatches(page) {
   await page.route('https://vidfast.pro/_next/static/chunks/*.js', async (route) => {
     const response = await route.fetch();
@@ -889,6 +921,12 @@ async function browserFallback(url, source) {
   const browserUserAgent =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
   const context = await browser.newContext({
+    extraHTTPHeaders: source === 'vidfast'
+      ? {
+        Referer: 'https://vidfast.pro/',
+        Origin: 'https://vidfast.pro',
+      }
+      : undefined,
     locale: 'en-US',
     userAgent: browserUserAgent,
     viewport: { width: 1366, height: 768 },
@@ -896,6 +934,7 @@ async function browserFallback(url, source) {
   const page = await context.newPage();
 
   if (source === 'vidfast') {
+    await installVidfastEnvironment(page);
     await installVidfastChunkPatches(page);
     await installVidfastCapture(page);
   }
