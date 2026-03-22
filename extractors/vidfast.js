@@ -11,7 +11,7 @@ async function extractVidfast(url) {
     if (parsed.pathname.startsWith('/movie/') || parsed.pathname.startsWith('/tv/')) {
       const parts = parsed.pathname.split('/').filter(Boolean);
       parsed.pathname = '/embed/' + parts.slice(1).join('/');
-      parsed.searchParams.set('autoPlay', 'true');
+
       targetUrl = parsed.toString();
     }
   } catch (e) {
@@ -61,10 +61,11 @@ async function extractVidfast(url) {
     );
   } catch (e) {}
 
-  const title = await page.title();
-  const html = await page.content();
-  console.log('[vidfast] page title:', title, 'html length:', html.length);
-  await page.screenshot({ path: '/Users/abdullahmohd/Desktop/NOVA/backend/vidfast-debug.png' });
+  let title = '';
+  try {
+    title = await page.title();
+  } catch (e) {}
+  console.log('[vidfast] page title:', title);
 
   if (stream) {
     await context.close().catch(() => {});
