@@ -572,6 +572,20 @@ async function installVidfastEnvironment(page) {
   });
 }
 
+async function installVidfastResourceBlocking(page) {
+  await page.route('**/*', async (route) => {
+    const request = route.request();
+    const resourceType = request.resourceType();
+
+    if (['image', 'font', 'stylesheet'].includes(resourceType)) {
+      await route.abort();
+      return;
+    }
+
+    await route.continue();
+  });
+}
+
 async function installVidfastChunkPatches(page) {
   await page.route('https://vidfast.pro/_next/static/chunks/*.js', async (route) => {
     const response = await route.fetch();
@@ -1008,6 +1022,7 @@ async function browserFallback(url, source) {
   const page = await context.newPage();
 
   if (source === 'vidfast') {
+    await installVidfastResourceBlocking(page);
     await installVidfastEnvironment(page);
     await installVidfastChunkPatches(page);
     await installVidfastCapture(page);
@@ -1219,7 +1234,7 @@ async function browserFallback(url, source) {
     visitedUrls.add(targetUrl);
     logStep(source, 'browser navigating', { depth, url: targetUrl });
 
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await page.goto(targetUrl, { waitUntil: source === 'vidfast' ? 'networkidle' : 'domcontentloaded', timeout: 20000 });
 
     if (source === 'vidlink') {
       const vidlinkApiResult = await tryVidlinkBrowserApi(page, targetUrl);
