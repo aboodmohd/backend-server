@@ -488,6 +488,11 @@ async function installVidfastChunkPatches(page) {
       'return o(),window[at(2444,"5(XA")](c3(2853),o),globalThis.__open_capture__&&(globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"bootstrap",en:e_,server:oW})),globalThis.__open_capture__.runtime={ap:ap,crypto:cE,encode:c$,en:e_,server:oW,setServers:Wa,setState:oh,setFavServer:Wm}),ap({crypto:cE,encode:c$,en:e_,server:oW,',
     );
 
+    patchedBody = patchedBody.replace(
+      'var aK=new Uint8Array(',
+      'globalThis.__open_capture__&&(globalThis.__open_capture__.globals={ap:typeof ap!=="undefined"?ap:null,crypto:typeof cE!=="undefined"?cE:null,encode:typeof c$!=="undefined"?c$:null,bufferCtor:typeof c1!=="undefined"?c1:null});var aK=new Uint8Array(',
+    );
+
     if (patchedBody === body) {
       logStep('vidfast', 'vidfast chunk patch skipped');
       await route.fulfill({ response, body });
@@ -527,7 +532,33 @@ async function tryVidfastManualBootstrap(page) {
   try {
     return await page.evaluate(async () => {
       const store = window.__open_capture__;
-      const runtime = store && store.runtime;
+      const runtime = store && (store.runtime || store.globals && {
+        ap: store.globals.ap,
+        crypto: store.globals.crypto,
+        encode: store.globals.encode,
+        en: (() => {
+          try {
+            const html = document.documentElement ? document.documentElement.outerHTML : '';
+            const match = html.match(/"en":"([^"]+)"[^]*?"host":"([^"]+)"[^]*?"id":"([^"]+)"/i);
+            return match ? match[1] : null;
+          } catch {
+            return null;
+          }
+        })(),
+        server: null,
+        setServers: (value) => {
+          store.bootstrap.push(JSON.stringify({ type: 'manual-setServers', value }));
+          return value;
+        },
+        setState: (value) => {
+          store.bootstrap.push(JSON.stringify({ type: 'manual-setState', value }));
+          return value;
+        },
+        setFavServer: (value) => {
+          store.bootstrap.push(JSON.stringify({ type: 'manual-setFavServer', value }));
+          return value;
+        },
+      });
 
       if (!runtime || typeof runtime.ap !== 'function') {
         return { invoked: false, reason: 'missing-runtime' };
