@@ -681,6 +681,22 @@ async function tryVidfastManualBootstrap(page) {
         btoa,
       };
 
+      if (bootstrapArgs.Buffer && typeof bootstrapArgs.Buffer.from === 'function') {
+        const originalFrom = bootstrapArgs.Buffer.from.bind(bootstrapArgs.Buffer);
+        bootstrapArgs.Buffer.from = (...args) => {
+          try {
+            store.bootstrap.push(JSON.stringify({
+              type: 'manual-buffer-from',
+              argTypes: args.map((arg) => typeof arg),
+              firstArg: typeof args[0] === 'string' ? args[0].slice(0, 300) : args[0],
+            }));
+          } catch {
+            // Ignore logging failures.
+          }
+          return originalFrom(...args);
+        };
+      }
+
       await runtime.ap(bootstrapArgs, bootstrapArgs);
 
       return { invoked: true };
@@ -1123,7 +1139,7 @@ async function browserFallback(url, source) {
       if (capture?.bootstrap?.length) {
         logStep(source, 'vidfast captured bootstrap entries', {
           count: capture.bootstrap.length,
-          entries: capture.bootstrap.slice(0, 5),
+          entries: capture.bootstrap.slice(0, 10),
         });
       }
 
