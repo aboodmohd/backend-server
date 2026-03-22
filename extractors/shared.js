@@ -542,8 +542,18 @@ async function installVidfastCapture(page) {
 
 async function installVidfastEnvironment(page) {
   await page.addInitScript(() => {
+    const realUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
     try {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    } catch {}
+
+    try {
+      Object.defineProperty(navigator, 'userAgent', { get: () => realUserAgent });
+    } catch {}
+
+    try {
+      Object.defineProperty(navigator, 'appVersion', { get: () => realUserAgent.replace('Mozilla/', '') });
     } catch {}
 
     try {
@@ -555,12 +565,51 @@ async function installVidfastEnvironment(page) {
     } catch {}
 
     try {
+      Object.defineProperty(navigator, 'language', { get: () => 'en-US' });
+    } catch {}
+
+    try {
+      Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
+    } catch {}
+
+    try {
+      Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+    } catch {}
+
+    try {
+      Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+    } catch {}
+
+    try {
+      Object.defineProperty(navigator, 'userAgentData', {
+        get: () => ({
+          brands: [
+            { brand: 'Not A(Brand)', version: '99' },
+            { brand: 'Chromium', version: '120' },
+            { brand: 'Google Chrome', version: '120' },
+          ],
+          mobile: false,
+          platform: 'Windows',
+          getHighEntropyValues: async () => ({
+            architecture: 'x86',
+            bitness: '64',
+            mobile: false,
+            model: '',
+            platform: 'Windows',
+            platformVersion: '10.0.0',
+            uaFullVersion: '120.0.0.0',
+          }),
+        }),
+      });
+    } catch {}
+
+    try {
       Object.defineProperty(document, 'referrer', { get: () => 'https://vidfast.pro/' });
     } catch {}
 
     try {
       Object.defineProperty(window, 'chrome', {
-        get: () => ({ runtime: {}, app: {} }),
+        get: () => ({ runtime: {}, app: {}, csi: () => ({}), loadTimes: () => ({}) }),
       });
     } catch {}
 
@@ -1011,6 +1060,9 @@ async function browserFallback(url, source) {
   const context = await browser.newContext({
     extraHTTPHeaders: source === 'vidfast'
       ? {
+        'Sec-CH-UA': '"Not A(Brand)";v="99", "Chromium";v="120", "Google Chrome";v="120"',
+        'Sec-CH-UA-Mobile': '?0',
+        'Sec-CH-UA-Platform': '"Windows"',
         Referer: 'https://vidfast.pro/',
         Origin: 'https://vidfast.pro',
       }
