@@ -175,35 +175,64 @@ function extractVidlinkPayload(payload, baseUrl) {
   }
 }
 
-function parseVidfastFlightBootstrap(html, baseUrl) {
-  const text = String(html || '');
-  const match = text.match(/"en":"([^"]+)"[^]*?"host":"([^"]+)"[^]*?"ad":(true|false)[^]*?"from":(null|"[^"]*")[^]*?"chromecast":(true|false)[^]*?"fullscreenButton":(true|false)[^]*?"hideServer":(true|false)[^]*?"sub":"([^"]*|\$undefined)"[^]*?"mobile":(true|false)[^]*?"backdrop":"([^"]*)"[^]*?"id":"([^"]+)"[^]*?"title":"([^"]*)"[^]*?"year":"([^"]*)"[^]*?"progress":"([^"]*|\$undefined)"[^]*?"autoPlay":(true|false)[^]*?"startAt":"([^"]*|\$undefined)"[^]*?"theme":"([^"]*)"[^]*?"server":"([^"]*|\$undefined)"/i);
-
-  if (!match) {
+function extractVidfastBootstrapObject(text) {
+  const marker = '5:["$","$L11",null,{';
+  const start = String(text || '').indexOf(marker);
+  if (start === -1) {
     return null;
   }
 
-  return {
-    en: match[1],
-    host: match[2],
-    ad: match[3] === 'true',
-    from: match[4] === 'null' ? null : match[4].replace(/^"|"$/g, ''),
-    chromecast: match[5] === 'true',
-    fullscreenButton: match[6] === 'true',
-    hideServer: match[7] === 'true',
-    sub: match[8],
-    mobile: match[9] === 'true',
-    backdrop: match[10],
-    id: match[11],
-    title: match[12],
-    year: match[13],
-    progress: match[14],
-    autoPlay: match[15] === 'true',
-    startAt: match[16],
-    theme: match[17],
-    server: match[18],
-    url: baseUrl,
-  };
+  const objectStart = start + marker.length - 1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = objectStart; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(objectStart, index + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+function parseVidfastFlightBootstrap(html, baseUrl) {
+  const objectText = extractVidfastBootstrapObject(String(html || ''));
+  if (!objectText) {
+    return null;
+  }
+
+  try {
+    return {
+      ...JSON.parse(objectText),
+      url: baseUrl,
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function tryVidlinkBrowserApi(page, targetUrl) {
@@ -581,28 +610,43 @@ async function tryVidfastManualBootstrap(page) {
       const bootstrapData = (() => {
         try {
           const html = document.documentElement ? document.documentElement.outerHTML : '';
-          const match = html.match(/"en":"([^"]+)"[^]*?"host":"([^"]+)"[^]*?"ad":(true|false)[^]*?"from":(null|"[^"]*")[^]*?"chromecast":(true|false)[^]*?"fullscreenButton":(true|false)[^]*?"hideServer":(true|false)[^]*?"sub":"([^"]*|\$undefined)"[^]*?"mobile":(true|false)[^]*?"backdrop":"([^"]*)"[^]*?"id":"([^"]+)"[^]*?"title":"([^"]*)"[^]*?"year":"([^"]*)"[^]*?"progress":"([^"]*|\$undefined)"[^]*?"autoPlay":(true|false)[^]*?"startAt":"([^"]*|\$undefined)"[^]*?"theme":"([^"]*)"[^]*?"server":"([^"]*|\$undefined)"/i);
-          if (!match) return null;
-          return {
-            en: match[1],
-            host: match[2],
-            ad: match[3] === 'true',
-            from: match[4] === 'null' ? null : match[4].replace(/^"|"$/g, ''),
-            chromecast: match[5] === 'true',
-            fullscreenButton: match[6] === 'true',
-            hideServer: match[7] === 'true',
-            sub: match[8],
-            mobile: match[9] === 'true',
-            backdrop: match[10],
-            id: match[11],
-            title: match[12],
-            year: match[13],
-            progress: match[14],
-            autoPlay: match[15] === 'true',
-            startAt: match[16],
-            theme: match[17],
-            server: match[18],
-          };
+          const marker = '5:["$","$L11",null,{';
+          const start = html.indexOf(marker);
+          if (start === -1) return null;
+          const objectStart = start + marker.length - 1;
+          let depth = 0;
+          let inString = false;
+          let escaped = false;
+          let objectText = null;
+
+          for (let index = objectStart; index < html.length; index += 1) {
+            const char = html[index];
+            if (inString) {
+              if (escaped) {
+                escaped = false;
+              } else if (char === '\\') {
+                escaped = true;
+              } else if (char === '"') {
+                inString = false;
+              }
+              continue;
+            }
+            if (char === '"') {
+              inString = true;
+              continue;
+            }
+            if (char === '{') {
+              depth += 1;
+            } else if (char === '}') {
+              depth -= 1;
+              if (depth === 0) {
+                objectText = html.slice(objectStart, index + 1);
+                break;
+              }
+            }
+          }
+
+          return objectText ? JSON.parse(objectText) : null;
         } catch {
           return null;
         }
