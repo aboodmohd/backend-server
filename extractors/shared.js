@@ -177,7 +177,7 @@ function extractVidlinkPayload(payload, baseUrl) {
 
 function parseVidfastFlightBootstrap(html, baseUrl) {
   const text = String(html || '');
-  const match = text.match(/"en":"([^"]+)"[^]*?"host":"([^"]+)"[^]*?"ad":(true|false)[^]*?"from":(null|"[^"]*")[^]*?"chromecast":(true|false)[^]*?"fullscreenButton":(true|false)[^]*?"hideServer":(true|false)[^]*?"sub":"([^"]*|\$undefined)"[^]*?"mobile":(true|false)[^]*?"id":"([^"]+)"[^]*?"title":"([^"]*)"[^]*?"year":"([^"]*)"[^]*?"progress":"([^"]*|\$undefined)"[^]*?"autoPlay":(true|false)[^]*?"startAt":"([^"]*|\$undefined)"[^]*?"theme":"([^"]*)"[^]*?"server":"([^"]*|\$undefined)"/i);
+  const match = text.match(/"en":"([^"]+)"[^]*?"host":"([^"]+)"[^]*?"ad":(true|false)[^]*?"from":(null|"[^"]*")[^]*?"chromecast":(true|false)[^]*?"fullscreenButton":(true|false)[^]*?"hideServer":(true|false)[^]*?"sub":"([^"]*|\$undefined)"[^]*?"mobile":(true|false)[^]*?"backdrop":"([^"]*)"[^]*?"id":"([^"]+)"[^]*?"title":"([^"]*)"[^]*?"year":"([^"]*)"[^]*?"progress":"([^"]*|\$undefined)"[^]*?"autoPlay":(true|false)[^]*?"startAt":"([^"]*|\$undefined)"[^]*?"theme":"([^"]*)"[^]*?"server":"([^"]*|\$undefined)"/i);
 
   if (!match) {
     return null;
@@ -191,16 +191,17 @@ function parseVidfastFlightBootstrap(html, baseUrl) {
     chromecast: match[5] === 'true',
     fullscreenButton: match[6] === 'true',
     hideServer: match[7] === 'true',
-    sub: match[8] === '$undefined' ? undefined : match[8],
+    sub: match[8],
     mobile: match[9] === 'true',
-    id: match[10],
-    title: match[11],
-    year: match[12],
-    progress: match[13] === '$undefined' ? undefined : match[13],
-    autoPlay: match[14] === 'true',
-    startAt: match[15] === '$undefined' ? undefined : match[15],
-    theme: match[16],
-    server: match[17] === '$undefined' ? undefined : match[17],
+    backdrop: match[10],
+    id: match[11],
+    title: match[12],
+    year: match[13],
+    progress: match[14],
+    autoPlay: match[15] === 'true',
+    startAt: match[16],
+    theme: match[17],
+    server: match[18],
     url: baseUrl,
   };
 }
@@ -548,7 +549,7 @@ async function tryVidfastManualBootstrap(page) {
       const bootstrapData = (() => {
         try {
           const html = document.documentElement ? document.documentElement.outerHTML : '';
-          const match = html.match(/"en":"([^"]+)"[^]*?"host":"([^"]+)"[^]*?"ad":(true|false)[^]*?"from":(null|"[^"]*")[^]*?"chromecast":(true|false)[^]*?"fullscreenButton":(true|false)[^]*?"hideServer":(true|false)[^]*?"sub":"([^"]*|\$undefined)"[^]*?"mobile":(true|false)[^]*?"id":"([^"]+)"[^]*?"title":"([^"]*)"[^]*?"year":"([^"]*)"[^]*?"progress":"([^"]*|\$undefined)"[^]*?"autoPlay":(true|false)[^]*?"startAt":"([^"]*|\$undefined)"[^]*?"theme":"([^"]*)"[^]*?"server":"([^"]*|\$undefined)"/i);
+          const match = html.match(/"en":"([^"]+)"[^]*?"host":"([^"]+)"[^]*?"ad":(true|false)[^]*?"from":(null|"[^"]*")[^]*?"chromecast":(true|false)[^]*?"fullscreenButton":(true|false)[^]*?"hideServer":(true|false)[^]*?"sub":"([^"]*|\$undefined)"[^]*?"mobile":(true|false)[^]*?"backdrop":"([^"]*)"[^]*?"id":"([^"]+)"[^]*?"title":"([^"]*)"[^]*?"year":"([^"]*)"[^]*?"progress":"([^"]*|\$undefined)"[^]*?"autoPlay":(true|false)[^]*?"startAt":"([^"]*|\$undefined)"[^]*?"theme":"([^"]*)"[^]*?"server":"([^"]*|\$undefined)"/i);
           if (!match) return null;
           return {
             en: match[1],
@@ -558,16 +559,17 @@ async function tryVidfastManualBootstrap(page) {
             chromecast: match[5] === 'true',
             fullscreenButton: match[6] === 'true',
             hideServer: match[7] === 'true',
-            sub: match[8] === '$undefined' ? undefined : match[8],
+            sub: match[8],
             mobile: match[9] === 'true',
-            id: match[10],
-            title: match[11],
-            year: match[12],
-            progress: match[13] === '$undefined' ? undefined : match[13],
-            autoPlay: match[14] === 'true',
-            startAt: match[15] === '$undefined' ? undefined : match[15],
-            theme: match[16],
-            server: match[17] === '$undefined' ? undefined : match[17],
+            backdrop: match[10],
+            id: match[11],
+            title: match[12],
+            year: match[13],
+            progress: match[14],
+            autoPlay: match[15] === 'true',
+            startAt: match[16],
+            theme: match[17],
+            server: match[18],
           };
         } catch {
           return null;
@@ -613,6 +615,7 @@ async function tryVidfastManualBootstrap(page) {
         hideServer: runtime.hideServer,
         sub: runtime.sub,
         mobile: runtime.mobile,
+        backdrop: runtime.backdrop,
         id: runtime.id,
         title: runtime.title,
         year: runtime.year,
