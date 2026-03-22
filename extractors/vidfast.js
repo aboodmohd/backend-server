@@ -1,81 +1,100 @@
-const { browserFallback, createError, extractDirectMedia } = require('./shared');
+const { getBrowser } = require("./browser.js");
+const { isStream } = require("./streamDetector.js");
+const { createError } = require("./shared.js");
 
-function parseVidfastPath(url) {
-  const parsedUrl = new URL(url);
-  const segments = parsedUrl.pathname.split('/').filter(Boolean);
-  const [type, tmdbId, season, episode] = segments;
+const cache = new Map();
 
-  if (type === 'movie' && tmdbId) {
-    return {
-      type,
-      tmdbId,
-    };
+async function extractVidfast(url) {
+  let targetUrl = url;
+  try {
+    const parsed = new URL(url);
+    if (parsed.pathname.startsWith('/movie/') || parsed.pathname.startsWith('/tv/')) {
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      parsed.pathname = '/embed/' + parts.slice(1).join('/');
+      parsed.searchParams.set('autoPlay', 'true');
+      targetUrl = parsed.toString();
+    }
+  } catch (e) {
+    // ignore
   }
 
-  if (type === 'tv' && tmdbId && season && episode) {
-    return {
-      type,
-      tmdbId,
-      season,
-      episode,
-    };
+  const browser = await getBrowser();
+  const context = await browser.newContext({
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+  });
+  const page = await context.newPage();
+
+  console.log('[vidfast] Extracting from targetUrl:', targetUrl);
+
+  let stream = null;
+
+  // await page.route("**/*", async (route) => {
+  //   const type = route.request().resourceType();
+  //   if (type === "image" || type === "font" || type === "stylesheet") {
+  //     await route.abort().catch(() => {});
+  //   } else {
+  //     await route.continue().catch(() => {});
+  //   }
+  // });
+
+  page.on("response", async (res) => {
+    const u = res.url();
+    if (u.includes('api') || u.includes('stream') || u.includes('m3u8') || u.endsWith('js')) {
+      console.log('[vidfast] response:', u);
+    }
+    if (isStream(u)) {
+      console.log('[vidfast] found stream:', u);
+      stream = u;
+    }
+  });
+
+  try {
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+  } catch (err) {
+    console.error('[vidfast] goto error:', err.message);
   }
 
-  return {
-    type: type || 'unknown',
-    tmdbId: tmdbId || null,
-    season: season || null,
-    episode: episode || null,
-  };
+  try {
+    await page.waitForFunction(
+      () => window.document.readyState === "complete" || window.document.readyState === "interactive",
+      { timeout: 10000 }
+    );
+  } catch (e) {}
+
+  const title = await page.title();
+  const html = await page.content();
+  console.log('[vidfast] page title:', title, 'html length:', html.length);
+  await page.screenshot({ path: '/Users/abdullahmohd/Desktop/NOVA/backend/vidfast-debug.png' });
+
+  if (stream) {
+    await context.close().catch(() => {});
+    return stream;
+  }
+
+  if (!stream) {
+    let waitTime = 0;
+    while (!stream && waitTime < 10000) {
+      await new Promise(r => setTimeout(r, 500));
+      waitTime += 500;
+    }
+  }
+
+  console.log(`[vidfast] Finished polling. Stream =`, stream);
+  await context.close().catch(() => {});
+  return stream;
 }
 
-module.exports = async function vidfast(url) {
-  const descriptor = parseVidfastPath(url);
-
-  if (descriptor.type === 'tv' && (!descriptor.tmdbId || !descriptor.season || !descriptor.episode)) {
-    throw createError(400, 'INVALID_VIDFAST_TV_URL', 'Vidfast TV URLs must include tmdbId, season, and episode');
+module.exports = async function resolveVidfast(url) {
+  if (cache.has(url)) {
+    return { stream: cache.get(url), source: 'vidfast' };
   }
 
-  if (descriptor.type !== 'movie' && descriptor.type !== 'tv') {
-    throw createError(400, 'INVALID_VIDFAST_URL', 'Vidfast URLs must use /movie/{id} or /tv/{id}/{season}/{episode}');
+  const stream = await extractVidfast(url);
+
+  if (stream) {
+    cache.set(url, stream);
+    return { stream, source: 'vidfast' };
   }
 
-  let directResult;
-
-  try {
-    directResult = await extractDirectMedia(url, 'vidfast');
-  } catch (error) {
-    if (error.code === 'PROVIDER_BLOCKED') {
-      throw createError(503, 'VIDFAST_BLOCKED', 'Vidfast is currently blocked by Cloudflare from this server/IP');
-    }
-
-    throw error;
-  }
-
-  if (directResult.stream) {
-    return {
-      stream: directResult.stream,
-      subtitles: directResult.subtitles,
-      source: 'vidfast',
-    };
-  }
-
-  let browserResult;
-
-  try {
-    browserResult = await browserFallback(url, 'vidfast');
-  } catch (error) {
-    if (error.code === 'BROWSER_NO_STREAM') {
-      throw createError(504, 'VIDFAST_NO_STREAM', 'Vidfast did not expose a playable stream from this environment');
-    }
-
-    throw error;
-  }
-
-  return {
-    stream: browserResult.stream,
-    headers: browserResult.headers,
-    subtitles: [...(directResult.subtitles || []), ...(browserResult.subtitles || [])],
-    source: 'vidfast',
-  };
+  throw createError(404, 'STREAM_NOT_FOUND', 'Vidfast did not expose a playable stream from this environment');
 };
