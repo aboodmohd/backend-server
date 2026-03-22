@@ -603,54 +603,11 @@ async function collectVidfastCapture(page, currentUrl) {
   }
 }
 
-async function tryVidfastManualBootstrap(page) {
+async function tryVidfastManualBootstrap(page, bootstrapData) {
   try {
-    return await page.evaluate(async () => {
+    return await page.evaluate(async (bootstrapDataArg) => {
       const store = window.__open_capture__;
-      const bootstrapData = (() => {
-        try {
-          const html = document.documentElement ? document.documentElement.outerHTML : '';
-          const marker = '5:["$","$L11",null,{';
-          const start = html.indexOf(marker);
-          if (start === -1) return null;
-          const objectStart = start + marker.length - 1;
-          let depth = 0;
-          let inString = false;
-          let escaped = false;
-          let objectText = null;
-
-          for (let index = objectStart; index < html.length; index += 1) {
-            const char = html[index];
-            if (inString) {
-              if (escaped) {
-                escaped = false;
-              } else if (char === '\\') {
-                escaped = true;
-              } else if (char === '"') {
-                inString = false;
-              }
-              continue;
-            }
-            if (char === '"') {
-              inString = true;
-              continue;
-            }
-            if (char === '{') {
-              depth += 1;
-            } else if (char === '}') {
-              depth -= 1;
-              if (depth === 0) {
-                objectText = html.slice(objectStart, index + 1);
-                break;
-              }
-            }
-          }
-
-          return objectText ? JSON.parse(objectText) : null;
-        } catch {
-          return null;
-        }
-      })();
+      const bootstrapData = bootstrapDataArg || null;
 
       const runtime = store && (store.runtime || store.globals && {
         ap: store.globals.ap,
@@ -813,7 +770,7 @@ async function tryVidfastManualBootstrap(page) {
       await runtime.ap(wrapBootstrapProxy(bootstrapArgs, 'arg0'), wrapBootstrapProxy(bootstrapArgs, 'arg1'));
 
       return { invoked: true };
-    });
+    }, bootstrapData);
   } catch (error) {
     return { invoked: false, reason: error.message };
   }
@@ -1248,9 +1205,9 @@ async function browserFallback(url, source) {
 
     if (source === 'vidfast') {
       const capture = await collectVidfastCapture(page, targetUrl);
+      const bootstrap = parseVidfastFlightBootstrap(capture?.html || '', targetUrl);
 
       if (capture?.html) {
-        const bootstrap = parseVidfastFlightBootstrap(capture.html, targetUrl);
         if (bootstrap) {
           logStep(source, 'vidfast bootstrap discovered', bootstrap);
         }
@@ -1291,7 +1248,7 @@ async function browserFallback(url, source) {
       }
 
       if (!pickBestStream([...streamCandidates])) {
-        const manualBootstrap = await tryVidfastManualBootstrap(page);
+        const manualBootstrap = await tryVidfastManualBootstrap(page, bootstrap);
         logStep(source, 'vidfast manual bootstrap', manualBootstrap);
         const postManualCapture = await collectVidfastCapture(page, targetUrl);
         if (postManualCapture?.bootstrap?.length) {
