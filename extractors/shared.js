@@ -485,7 +485,7 @@ async function installVidfastChunkPatches(page) {
 
     patchedBody = patchedBody.replace(
       bootstrapNeedle,
-      'return o(),window[at(2444,"5(XA")](c3(2853),o),globalThis.__open_capture__&&globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"bootstrap",en:e_,server:oW})),ap({crypto:cE,encode:c$,en:e_,server:oW,',
+      'return o(),window[at(2444,"5(XA")](c3(2853),o),globalThis.__open_capture__&&(globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"bootstrap",en:e_,server:oW})),globalThis.__open_capture__.runtime={ap:ap,crypto:cE,encode:c$,en:e_,server:oW,setServers:Wa,setState:oh,setFavServer:Wm}),ap({crypto:cE,encode:c$,en:e_,server:oW,',
     );
 
     if (patchedBody === body) {
@@ -520,6 +520,91 @@ async function collectVidfastCapture(page, currentUrl) {
     }, currentUrl);
   } catch {
     return null;
+  }
+}
+
+async function tryVidfastManualBootstrap(page) {
+  try {
+    return await page.evaluate(async () => {
+      const store = window.__open_capture__;
+      const runtime = store && store.runtime;
+
+      if (!runtime || typeof runtime.ap !== 'function') {
+        return { invoked: false, reason: 'missing-runtime' };
+      }
+
+      store.bootstrap.push(JSON.stringify({ type: 'manual-bootstrap-attempt', en: runtime.en, server: runtime.server }));
+
+      await runtime.ap({
+        crypto: runtime.crypto,
+        encode: runtime.encode,
+        en: runtime.en,
+        server: runtime.server,
+        setServers: runtime.setServers,
+        setState: runtime.setState,
+        setFavServer: runtime.setFavServer,
+        window,
+        document,
+        navigator,
+        localStorage,
+        console,
+        JSON,
+        Math,
+        Date,
+        RegExp,
+        Map,
+        Set,
+        WeakMap,
+        WeakSet,
+        Array,
+        Object,
+        Number,
+        String,
+        Boolean,
+        Symbol,
+        Function,
+        screen,
+        Error,
+        TypeError,
+        RangeError,
+        SyntaxError,
+        parseInt,
+        parseFloat,
+        isNaN,
+        isFinite,
+        encodeURIComponent,
+        decodeURIComponent,
+        NaN,
+        Infinity: 1 / 0,
+        undefined: void 0,
+        Promise,
+        Proxy,
+        Reflect,
+        Uint8Array,
+        Int8Array,
+        Uint16Array,
+        Int16Array,
+        Uint32Array,
+        Int32Array,
+        Float32Array,
+        Float64Array,
+        BigInt,
+        fetch,
+        TextEncoder,
+        TextDecoder,
+        URL,
+        URLSearchParams,
+        AbortSignal,
+        AbortController,
+        Buffer: window.Buffer,
+        atob,
+        btoa,
+      });
+
+      return { invoked: true };
+    });
+  } catch (error) {
+    return { invoked: false, reason: error.message };
   }
 }
 
@@ -985,6 +1070,12 @@ async function browserFallback(url, source) {
           subtitles.push(subtitle);
         }
         signalStreamDetected();
+      }
+
+      if (!pickBestStream([...streamCandidates])) {
+        const manualBootstrap = await tryVidfastManualBootstrap(page);
+        logStep(source, 'vidfast manual bootstrap', manualBootstrap);
+        await waitForStream(5000);
       }
     }
 
