@@ -471,6 +471,11 @@ async function installVidfastChunkPatches(page) {
     );
 
     patchedBody = patchedBody.replace(
+      'async function ap(t,e){return',
+      'async function ap(t,e){try{globalThis.__open_capture__&&globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"ap-call",keys:Object.keys(t||{}),en:t&&t.en,server:t&&t.server,host:t&&t.host}));}catch(e){}return',
+    );
+
+    patchedBody = patchedBody.replace(
       'return o(),window[at(2444,"5(XA")](c3(2853),o),ap({crypto:cE,encode:c$,en:e_,server:oW,',
       'return o(),window[at(2444,"5(XA")](c3(2853),o),globalThis.__open_capture__&&globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"bootstrap",en:e_,server:oW})),ap({crypto:cE,encode:c$,en:e_,server:oW,',
     );
@@ -933,6 +938,13 @@ async function browserFallback(url, source) {
         if (bootstrap) {
           logStep(source, 'vidfast bootstrap discovered', bootstrap);
         }
+      }
+
+      if (capture?.bootstrap?.length) {
+        logStep(source, 'vidfast captured bootstrap entries', {
+          count: capture.bootstrap.length,
+          entries: capture.bootstrap.slice(0, 5),
+        });
       }
 
       for (const candidate of capture?.urls || []) {
