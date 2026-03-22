@@ -1079,10 +1079,31 @@ async function browserFallback(url, source) {
 
     if (shouldTraceNetworkCandidate(source, candidate, resourceType) && !tracedNetworkUrls.has(`request:${candidate}`)) {
       tracedNetworkUrls.add(`request:${candidate}`);
-      logStep(source, 'browser network request', {
+      const details = {
         resourceType,
         method: request.method(),
         url: candidate,
+      };
+
+      if (source === 'vidfast' && (resourceType === 'fetch' || resourceType === 'xhr')) {
+        const headers = request.headers();
+        details.headers = {
+          Accept: headers.accept,
+          Origin: headers.origin,
+          Referer: headers.referer,
+          'Sec-Fetch-Dest': headers['sec-fetch-dest'],
+          'Sec-Fetch-Mode': headers['sec-fetch-mode'],
+          'Sec-Fetch-Site': headers['sec-fetch-site'],
+          'User-Agent': headers['user-agent'],
+        };
+        const postData = request.postData();
+        if (postData) {
+          details.postData = postData.slice(0, 1200);
+        }
+      }
+
+      logStep(source, 'browser network request', {
+        ...details,
       });
     }
 
