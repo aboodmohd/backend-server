@@ -688,10 +688,13 @@ async function tryVidfastManualBootstrap(page) {
         const originalFrom = bootstrapArgs.Buffer.from.bind(bootstrapArgs.Buffer);
         bootstrapArgs.Buffer.from = (...args) => {
           try {
+            const error = new Error('vidfast-buffer-trace');
             store.bootstrap.push(JSON.stringify({
               type: 'manual-buffer-from',
               argTypes: args.map((arg) => typeof arg),
               firstArg: typeof args[0] === 'string' ? args[0].slice(0, 300) : args[0],
+              secondArg: typeof args[1] === 'string' ? args[1] : args[1],
+              stack: error.stack ? error.stack.split('\n').slice(0, 6) : [],
             }));
           } catch {
             // Ignore logging failures.
