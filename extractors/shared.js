@@ -1173,6 +1173,13 @@ async function browserFallback(url, source) {
       if (!pickBestStream([...streamCandidates])) {
         const manualBootstrap = await tryVidfastManualBootstrap(page);
         logStep(source, 'vidfast manual bootstrap', manualBootstrap);
+        const postManualCapture = await collectVidfastCapture(page, targetUrl);
+        if (postManualCapture?.bootstrap?.length) {
+          logStep(source, 'vidfast post-manual bootstrap entries', {
+            count: postManualCapture.bootstrap.length,
+            entries: postManualCapture.bootstrap.slice(0, 20),
+          });
+        }
         await waitForStream(5000);
       }
     }
