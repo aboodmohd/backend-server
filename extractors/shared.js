@@ -465,18 +465,26 @@ async function installVidfastChunkPatches(page) {
       return;
     }
 
+    const settersNeedle = 'ap({crypto:cE,encode:c$,en:e_,server:oW,setServers:Wa,setState:oh,setFavServer:Wm,window:window';
+    const apNeedle = 'async function ap(t,e){return';
+    const bootstrapNeedle = 'return o(),window[at(2444,"5(XA")](c3(2853),o),ap({crypto:cE,encode:c$,en:e_,server:oW,';
+
+    const hadSettersNeedle = body.includes(settersNeedle);
+    const hadApNeedle = body.includes(apNeedle);
+    const hadBootstrapNeedle = body.includes(bootstrapNeedle);
+
     let patchedBody = body.replace(
-      'ap({crypto:cE,encode:c$,en:e_,server:oW,setServers:Wa,setState:oh,setFavServer:Wm,window:window',
+      settersNeedle,
       'ap({crypto:cE,encode:c$,en:e_,server:oW,setServers:(...args)=>{try{globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"setServers",value:args[0]}));}catch(e){}return Wa(...args)},setState:(...args)=>{try{globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"setState",value:args[0]}));}catch(e){}return oh(...args)},setFavServer:(...args)=>{try{globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"setFavServer",value:args[0]}));}catch(e){}return Wm(...args)},window:window',
     );
 
     patchedBody = patchedBody.replace(
-      'async function ap(t,e){return',
+      apNeedle,
       'async function ap(t,e){try{if(globalThis.__open_capture__){globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"ap-call",keys:Object.keys(t||{}),en:t&&t.en,server:t&&t.server,host:t&&t.host}));if(t&&typeof t.fetch==="function"){const __vfFetch=t.fetch.bind(t);t.fetch=async(...args)=>{try{globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"ap-fetch",url:(args[0]&&typeof args[0]==="object")?args[0].url:args[0],init:args[1]||null}));}catch(e){}const res=await __vfFetch(...args);try{globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"ap-fetch-response",url:res.url,status:res.status,contentType:res.headers&&res.headers.get?res.headers.get("content-type"):null,body:await res.clone().text().then(text=>text.slice(0,1200))}));}catch(e){}return res;};}if(t&&t.crypto&&t.crypto.subtle){for(const key of ["encrypt","decrypt","importKey","deriveBits","deriveKey","sign"]){if(typeof t.crypto.subtle[key]==="function"){const original=t.crypto.subtle[key].bind(t.crypto.subtle);t.crypto.subtle[key]=async(...args)=>{try{globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"ap-subtle",method:key,args:args.map(arg=>typeof arg)}));}catch(e){}return original(...args);};}}}}}catch(e){}return',
     );
 
     patchedBody = patchedBody.replace(
-      'return o(),window[at(2444,"5(XA")](c3(2853),o),ap({crypto:cE,encode:c$,en:e_,server:oW,',
+      bootstrapNeedle,
       'return o(),window[at(2444,"5(XA")](c3(2853),o),globalThis.__open_capture__&&globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"bootstrap",en:e_,server:oW})),ap({crypto:cE,encode:c$,en:e_,server:oW,',
     );
 
@@ -486,7 +494,12 @@ async function installVidfastChunkPatches(page) {
       return;
     }
 
-    logStep('vidfast', 'vidfast chunk patch applied');
+    logStep('vidfast', 'vidfast chunk patch applied', {
+      url: route.request().url(),
+      matchedSetters: hadSettersNeedle,
+      matchedAp: hadApNeedle,
+      matchedBootstrap: hadBootstrapNeedle,
+    });
     await route.fulfill({ response, body: patchedBody });
   });
 }
