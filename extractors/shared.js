@@ -735,7 +735,21 @@ async function tryVidfastManualBootstrap(page) {
         };
       }
 
-      await runtime.ap(bootstrapArgs, bootstrapArgs);
+      const wrapBootstrapProxy = (target, label) => new Proxy(target, {
+        get(obj, prop, receiver) {
+          const value = Reflect.get(obj, prop, receiver);
+          if (value === undefined && typeof prop !== 'symbol') {
+            try {
+              store.bootstrap.push(JSON.stringify({ type: 'manual-missing-prop', label, prop: String(prop) }));
+            } catch {
+              // Ignore proxy logging failures.
+            }
+          }
+          return value;
+        },
+      });
+
+      await runtime.ap(wrapBootstrapProxy(bootstrapArgs, 'arg0'), wrapBootstrapProxy(bootstrapArgs, 'arg1'));
 
       return { invoked: true };
     });
