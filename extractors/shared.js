@@ -389,6 +389,7 @@ async function installVidfastCapture(page) {
       urls: [],
       events: [],
       bootstrap: [],
+      responses: [],
     };
 
     const pushUnique = (bucket, value) => {
@@ -692,12 +693,13 @@ async function installVidfastChunkPatches(page) {
 async function collectVidfastCapture(page, currentUrl) {
   try {
     return await page.evaluate((baseUrl) => {
-      const store = window.__open_capture__ || { urls: [], events: [], bootstrap: [] };
+      const store = window.__open_capture__ || { urls: [], events: [], bootstrap: [], responses: [] };
       const html = document.documentElement ? document.documentElement.outerHTML : '';
       return {
         urls: store.urls || [],
         events: store.events || [],
         bootstrap: store.bootstrap || [],
+        responses: store.responses || [],
         html,
         title: document.title || '',
         baseUrl,
@@ -1196,6 +1198,26 @@ async function browserFallback(url, source) {
         if (preview) {
           details.preview = preview;
         }
+        try {
+          const captureStore = await page.evaluateHandle(() => window.__open_capture__);
+          await captureStore.evaluate((store, payload) => {
+            if (!store || !Array.isArray(store.responses) || !payload || !payload.url) {
+              return;
+            }
+            const serialized = JSON.stringify(payload);
+            if (!store.responses.includes(serialized)) {
+              store.responses.push(serialized);
+            }
+          }, {
+            url: candidate,
+            status: response.status(),
+            contentType,
+            body: text.slice(0, 4000),
+          });
+          await captureStore.dispose();
+        } catch {
+          // Ignore response store failures.
+        }
       } catch {
         // Ignore preview failures for traced responses.
       }
@@ -1391,6 +1413,18 @@ async function browserFallback(url, source) {
         }
       }
 
+      for (const entry of capture?.responses || []) {
+        try {
+          const parsed = JSON.parse(entry);
+          const extracted = extractUrls(parsed.body || '', parsed.url || targetUrl);
+          for (const candidate of extracted) {
+            captureUrl(candidate);
+          }
+        } catch {
+          continue;
+        }
+      }
+
       const htmlResult = scanPayloadForMedia(capture?.html || '', targetUrl);
       if (htmlResult?.stream) {
         streamCandidates.add(htmlResult.stream);
@@ -1400,7 +1434,7 @@ async function browserFallback(url, source) {
         signalStreamDetected();
       }
 
-      await waitForStream(8000);
+      await waitForStream(4000);
     }
 
     if (pickBestStream([...streamCandidates])) {
