@@ -472,7 +472,7 @@ async function installVidfastChunkPatches(page) {
 
     patchedBody = patchedBody.replace(
       'async function ap(t,e){return',
-      'async function ap(t,e){try{globalThis.__open_capture__&&globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"ap-call",keys:Object.keys(t||{}),en:t&&t.en,server:t&&t.server,host:t&&t.host}));}catch(e){}return',
+      'async function ap(t,e){try{if(globalThis.__open_capture__){globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"ap-call",keys:Object.keys(t||{}),en:t&&t.en,server:t&&t.server,host:t&&t.host}));if(t&&typeof t.fetch==="function"){const __vfFetch=t.fetch.bind(t);t.fetch=async(...args)=>{try{globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"ap-fetch",url:(args[0]&&typeof args[0]==="object")?args[0].url:args[0],init:args[1]||null}));}catch(e){}const res=await __vfFetch(...args);try{globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"ap-fetch-response",url:res.url,status:res.status,contentType:res.headers&&res.headers.get?res.headers.get("content-type"):null,body:await res.clone().text().then(text=>text.slice(0,1200))}));}catch(e){}return res;};}if(t&&t.crypto&&t.crypto.subtle){for(const key of ["encrypt","decrypt","importKey","deriveBits","deriveKey","sign"]){if(typeof t.crypto.subtle[key]==="function"){const original=t.crypto.subtle[key].bind(t.crypto.subtle);t.crypto.subtle[key]=async(...args)=>{try{globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"ap-subtle",method:key,args:args.map(arg=>typeof arg)}));}catch(e){}return original(...args);};}}}}}catch(e){}return',
     );
 
     patchedBody = patchedBody.replace(
