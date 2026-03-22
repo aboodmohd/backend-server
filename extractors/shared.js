@@ -455,6 +455,37 @@ async function installVidfastCapture(page) {
   });
 }
 
+async function installVidfastChunkPatches(page) {
+  await page.route('https://vidfast.pro/_next/static/chunks/*.js', async (route) => {
+    const response = await route.fetch();
+    const body = await response.text();
+
+    if (!body.includes('ap({crypto:')) {
+      await route.fulfill({ response, body });
+      return;
+    }
+
+    let patchedBody = body.replace(
+      'ap({crypto:cE,encode:c$,en:e_,server:oW,setServers:Wa,setState:oh,setFavServer:Wm,window:window',
+      'ap({crypto:cE,encode:c$,en:e_,server:oW,setServers:(...args)=>{try{globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"setServers",value:args[0]}));}catch(e){}return Wa(...args)},setState:(...args)=>{try{globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"setState",value:args[0]}));}catch(e){}return oh(...args)},setFavServer:(...args)=>{try{globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"setFavServer",value:args[0]}));}catch(e){}return Wm(...args)},window:window',
+    );
+
+    patchedBody = patchedBody.replace(
+      'return o(),window[at(2444,"5(XA")](c3(2853),o),ap({crypto:cE,encode:c$,en:e_,server:oW,',
+      'return o(),window[at(2444,"5(XA")](c3(2853),o),globalThis.__open_capture__&&globalThis.__open_capture__.bootstrap.push(JSON.stringify({type:"bootstrap",en:e_,server:oW})),ap({crypto:cE,encode:c$,en:e_,server:oW,',
+    );
+
+    if (patchedBody === body) {
+      logStep('vidfast', 'vidfast chunk patch skipped');
+      await route.fulfill({ response, body });
+      return;
+    }
+
+    logStep('vidfast', 'vidfast chunk patch applied');
+    await route.fulfill({ response, body: patchedBody });
+  });
+}
+
 async function collectVidfastCapture(page, currentUrl) {
   try {
     return await page.evaluate((baseUrl) => {
@@ -658,6 +689,7 @@ async function browserFallback(url, source) {
   const page = await context.newPage();
 
   if (source === 'vidfast') {
+    await installVidfastChunkPatches(page);
     await installVidfastCapture(page);
   }
 
