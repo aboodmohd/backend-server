@@ -678,6 +678,23 @@ async function tryVidfastManualBootstrap(page) {
 
       store.bootstrap.push(JSON.stringify({ type: 'manual-bootstrap-attempt', en: runtime.en, server: runtime.server }));
 
+      const wrapEnvironmentProxy = (target, label) => new Proxy(target, {
+        get(obj, prop, receiver) {
+          const value = Reflect.get(obj, prop, receiver);
+          if (value === undefined && typeof prop !== 'symbol') {
+            try {
+              store.bootstrap.push(JSON.stringify({ type: 'manual-missing-env', label, prop: String(prop) }));
+            } catch {
+              // Ignore env logging failures.
+            }
+          }
+          if (typeof value === 'function') {
+            return value.bind(obj);
+          }
+          return value;
+        },
+      });
+
       const bootstrapArgs = {
         crypto: runtime.crypto,
         encode: runtime.encode,
@@ -702,10 +719,10 @@ async function tryVidfastManualBootstrap(page) {
         setServers: runtime.setServers,
         setState: runtime.setState,
         setFavServer: runtime.setFavServer,
-        window,
-        document,
-        navigator,
-        localStorage,
+        window: wrapEnvironmentProxy(window, 'window'),
+        document: wrapEnvironmentProxy(document, 'document'),
+        navigator: wrapEnvironmentProxy(navigator, 'navigator'),
+        localStorage: wrapEnvironmentProxy(localStorage, 'localStorage'),
         console,
         JSON,
         Math,
