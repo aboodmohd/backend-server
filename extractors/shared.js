@@ -600,7 +600,7 @@ async function tryVidfastManualBootstrap(page) {
 
       store.bootstrap.push(JSON.stringify({ type: 'manual-bootstrap-attempt', en: runtime.en, server: runtime.server }));
 
-      await runtime.ap({
+      const bootstrapArgs = {
         crypto: runtime.crypto,
         encode: runtime.encode,
         en: runtime.en,
@@ -679,7 +679,9 @@ async function tryVidfastManualBootstrap(page) {
         Buffer: runtime.bufferCtor || window.Buffer,
         atob,
         btoa,
-      });
+      };
+
+      await runtime.ap(bootstrapArgs, bootstrapArgs);
 
       return { invoked: true };
     });
