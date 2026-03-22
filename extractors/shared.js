@@ -1189,7 +1189,17 @@ async function browserFallback(url, source) {
       url: candidate,
     };
 
-    if ((resourceType === 'fetch' || resourceType === 'xhr') && /json|javascript|text/i.test(contentType)) {
+    if (source === 'vidfast' && (resourceType === 'fetch' || resourceType === 'xhr')) {
+      try {
+        const text = await response.text();
+        const preview = text.replace(/\s+/g, ' ').slice(0, 1200);
+        if (preview) {
+          details.preview = preview;
+        }
+      } catch {
+        // Ignore preview failures for traced responses.
+      }
+    } else if ((resourceType === 'fetch' || resourceType === 'xhr') && /json|javascript|text/i.test(contentType)) {
       try {
         const text = await response.text();
         const preview = text.replace(/\s+/g, ' ').slice(0, 220);
@@ -1390,18 +1400,7 @@ async function browserFallback(url, source) {
         signalStreamDetected();
       }
 
-      if (!pickBestStream([...streamCandidates])) {
-        const manualBootstrap = await tryVidfastManualBootstrap(page, bootstrap);
-        logStep(source, 'vidfast manual bootstrap', manualBootstrap);
-        const postManualCapture = await collectVidfastCapture(page, targetUrl);
-        if (postManualCapture?.bootstrap?.length) {
-          logStep(source, 'vidfast post-manual bootstrap entries', {
-            count: postManualCapture.bootstrap.length,
-            entries: postManualCapture.bootstrap.slice(0, 20),
-          });
-        }
-        await waitForStream(5000);
-      }
+      await waitForStream(8000);
     }
 
     if (pickBestStream([...streamCandidates])) {
