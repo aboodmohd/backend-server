@@ -412,12 +412,54 @@ async function installVidfastCapture(page) {
     };
 
     const parseFlightChunk = (payload) => {
-      if (typeof payload !== 'string' || !payload.includes('"en":"')) {
+      if (typeof payload !== 'string' || !payload.includes('5:["$","$L11",null,{')) {
         return;
       }
-      const match = payload.match(/"en":"([^"]+)"[^]*?"host":"([^"]+)"[^]*?"id":"([^"]+)"/i);
-      if (match) {
-        pushUnique(store.bootstrap, JSON.stringify({ en: match[1], host: match[2], id: match[3] }));
+
+      const marker = '5:["$","$L11",null,{';
+      const start = payload.indexOf(marker);
+      if (start === -1) {
+        return;
+      }
+
+      const objectStart = start + marker.length - 1;
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+
+      for (let index = objectStart; index < payload.length; index += 1) {
+        const char = payload[index];
+
+        if (inString) {
+          if (escaped) {
+            escaped = false;
+          } else if (char === '\\') {
+            escaped = true;
+          } else if (char === '"') {
+            inString = false;
+          }
+          continue;
+        }
+
+        if (char === '"') {
+          inString = true;
+          continue;
+        }
+
+        if (char === '{') {
+          depth += 1;
+        } else if (char === '}') {
+          depth -= 1;
+          if (depth === 0) {
+            const objectText = payload.slice(objectStart, index + 1);
+            try {
+              pushUnique(store.bootstrap, JSON.stringify(JSON.parse(objectText)));
+            } catch {
+              // Ignore malformed bootstrap chunks.
+            }
+            return;
+          }
+        }
       }
     };
 
@@ -1205,7 +1247,20 @@ async function browserFallback(url, source) {
 
     if (source === 'vidfast') {
       const capture = await collectVidfastCapture(page, targetUrl);
-      const bootstrap = parseVidfastFlightBootstrap(capture?.html || '', targetUrl);
+      const capturedBootstrap = (() => {
+        for (const entry of capture?.bootstrap || []) {
+          try {
+            const parsed = JSON.parse(entry);
+            if (parsed && parsed.en && parsed.host && parsed.id) {
+              return parsed;
+            }
+          } catch {
+            continue;
+          }
+        }
+        return null;
+      })();
+      const bootstrap = capturedBootstrap || parseVidfastFlightBootstrap(capture?.html || '', targetUrl);
 
       if (capture?.html) {
         if (bootstrap) {
