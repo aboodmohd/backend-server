@@ -177,7 +177,7 @@ function extractVidlinkPayload(payload, baseUrl) {
 
 function parseVidfastFlightBootstrap(html, baseUrl) {
   const text = String(html || '');
-  const match = text.match(/"en":"([^"]+)"[^]*?"host":"([^"]+)"[^]*?"id":"([^"]+)"[^]*?"autoPlay":(true|false)/i);
+  const match = text.match(/"en":"([^"]+)"[^]*?"host":"([^"]+)"[^]*?"ad":(true|false)[^]*?"from":(null|"[^"]*")[^]*?"chromecast":(true|false)[^]*?"fullscreenButton":(true|false)[^]*?"hideServer":(true|false)[^]*?"sub":"([^"]*|\$undefined)"[^]*?"mobile":(true|false)[^]*?"id":"([^"]+)"[^]*?"title":"([^"]*)"[^]*?"year":"([^"]*)"[^]*?"progress":"([^"]*|\$undefined)"[^]*?"autoPlay":(true|false)[^]*?"startAt":"([^"]*|\$undefined)"[^]*?"theme":"([^"]*)"[^]*?"server":"([^"]*|\$undefined)"/i);
 
   if (!match) {
     return null;
@@ -186,8 +186,21 @@ function parseVidfastFlightBootstrap(html, baseUrl) {
   return {
     en: match[1],
     host: match[2],
-    id: match[3],
-    autoPlay: match[4] === 'true',
+    ad: match[3] === 'true',
+    from: match[4] === 'null' ? null : match[4].replace(/^"|"$/g, ''),
+    chromecast: match[5] === 'true',
+    fullscreenButton: match[6] === 'true',
+    hideServer: match[7] === 'true',
+    sub: match[8] === '$undefined' ? undefined : match[8],
+    mobile: match[9] === 'true',
+    id: match[10],
+    title: match[11],
+    year: match[12],
+    progress: match[13] === '$undefined' ? undefined : match[13],
+    autoPlay: match[14] === 'true',
+    startAt: match[15] === '$undefined' ? undefined : match[15],
+    theme: match[16],
+    server: match[17] === '$undefined' ? undefined : match[17],
     url: baseUrl,
   };
 }
@@ -532,20 +545,41 @@ async function tryVidfastManualBootstrap(page) {
   try {
     return await page.evaluate(async () => {
       const store = window.__open_capture__;
+      const bootstrapData = (() => {
+        try {
+          const html = document.documentElement ? document.documentElement.outerHTML : '';
+          const match = html.match(/"en":"([^"]+)"[^]*?"host":"([^"]+)"[^]*?"ad":(true|false)[^]*?"from":(null|"[^"]*")[^]*?"chromecast":(true|false)[^]*?"fullscreenButton":(true|false)[^]*?"hideServer":(true|false)[^]*?"sub":"([^"]*|\$undefined)"[^]*?"mobile":(true|false)[^]*?"id":"([^"]+)"[^]*?"title":"([^"]*)"[^]*?"year":"([^"]*)"[^]*?"progress":"([^"]*|\$undefined)"[^]*?"autoPlay":(true|false)[^]*?"startAt":"([^"]*|\$undefined)"[^]*?"theme":"([^"]*)"[^]*?"server":"([^"]*|\$undefined)"/i);
+          if (!match) return null;
+          return {
+            en: match[1],
+            host: match[2],
+            ad: match[3] === 'true',
+            from: match[4] === 'null' ? null : match[4].replace(/^"|"$/g, ''),
+            chromecast: match[5] === 'true',
+            fullscreenButton: match[6] === 'true',
+            hideServer: match[7] === 'true',
+            sub: match[8] === '$undefined' ? undefined : match[8],
+            mobile: match[9] === 'true',
+            id: match[10],
+            title: match[11],
+            year: match[12],
+            progress: match[13] === '$undefined' ? undefined : match[13],
+            autoPlay: match[14] === 'true',
+            startAt: match[15] === '$undefined' ? undefined : match[15],
+            theme: match[16],
+            server: match[17] === '$undefined' ? undefined : match[17],
+          };
+        } catch {
+          return null;
+        }
+      })();
+
       const runtime = store && (store.runtime || store.globals && {
         ap: store.globals.ap,
         crypto: store.globals.crypto,
         encode: store.globals.encode,
-        en: (() => {
-          try {
-            const html = document.documentElement ? document.documentElement.outerHTML : '';
-            const match = html.match(/"en":"([^"]+)"[^]*?"host":"([^"]+)"[^]*?"id":"([^"]+)"/i);
-            return match ? match[1] : null;
-          } catch {
-            return null;
-          }
-        })(),
-        server: null,
+        bufferCtor: store.globals.bufferCtor,
+        ...bootstrapData,
         setServers: (value) => {
           store.bootstrap.push(JSON.stringify({ type: 'manual-setServers', value }));
           return value;
@@ -571,6 +605,21 @@ async function tryVidfastManualBootstrap(page) {
         encode: runtime.encode,
         en: runtime.en,
         server: runtime.server,
+        host: runtime.host,
+        ad: runtime.ad,
+        from: runtime.from,
+        chromecast: runtime.chromecast,
+        fullscreenButton: runtime.fullscreenButton,
+        hideServer: runtime.hideServer,
+        sub: runtime.sub,
+        mobile: runtime.mobile,
+        id: runtime.id,
+        title: runtime.title,
+        year: runtime.year,
+        progress: runtime.progress,
+        autoPlay: runtime.autoPlay,
+        startAt: runtime.startAt,
+        theme: runtime.theme,
         setServers: runtime.setServers,
         setState: runtime.setState,
         setFavServer: runtime.setFavServer,
@@ -627,7 +676,7 @@ async function tryVidfastManualBootstrap(page) {
         URLSearchParams,
         AbortSignal,
         AbortController,
-        Buffer: window.Buffer,
+        Buffer: runtime.bufferCtor || window.Buffer,
         atob,
         btoa,
       });
