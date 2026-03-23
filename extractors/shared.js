@@ -1154,6 +1154,7 @@ async function browserFallback(url, source) {
   const tracedNetworkUrls = new Set();
   let bestStream = null;
   let bestStreamPriority = Number.POSITIVE_INFINITY;
+  let resolvedResult = null;
   let resolveFastStream;
   let fastStreamSettled = false;
   let navigationError = null;
@@ -1211,6 +1212,38 @@ async function browserFallback(url, source) {
 
     signalStreamDetected();
     finalizeFastStream();
+    return true;
+  };
+
+  const resolveDetectedStream = (candidate, requestHeaders = {}, contentType = '', subtitleList = []) => {
+    const registered = registerStreamCandidate(candidate, requestHeaders, contentType);
+
+    if (!registered) {
+      return false;
+    }
+
+    if (Array.isArray(subtitleList) && subtitleList.length > 0) {
+      subtitles.push(...subtitleList);
+    }
+
+    const stream = bestStream || candidate;
+    const relevantHeaders = mediaRequestHeaders.get(stream) || requestHeaders || {};
+
+    resolvedResult = {
+      stream,
+      subtitles: dedupeSubtitles(subtitles),
+      headers: {
+        Referer: relevantHeaders.referer || relevantHeaders.Referer,
+        Origin: relevantHeaders.origin || relevantHeaders.Origin,
+        Accept: relevantHeaders.accept || relevantHeaders.Accept,
+        'Accept-Language': relevantHeaders['accept-language'] || relevantHeaders['Accept-Language'],
+        'Sec-Fetch-Dest': relevantHeaders['sec-fetch-dest'] || relevantHeaders['Sec-Fetch-Dest'],
+        'Sec-Fetch-Mode': relevantHeaders['sec-fetch-mode'] || relevantHeaders['Sec-Fetch-Mode'],
+        'Sec-Fetch-Site': relevantHeaders['sec-fetch-site'] || relevantHeaders['Sec-Fetch-Site'],
+        'User-Agent': relevantHeaders['user-agent'] || relevantHeaders['User-Agent'] || browserUserAgent,
+      },
+    };
+
     return true;
   };
 
@@ -1298,6 +1331,10 @@ async function browserFallback(url, source) {
     if (source === 'vidfast' && (resourceType === 'fetch' || resourceType === 'xhr')) {
       try {
         const text = await response.text();
+        const payloadResult = scanPayloadForMedia(text, candidate);
+        if (payloadResult?.stream) {
+          resolveDetectedStream(payloadResult.stream, requestHeaders, contentType, payloadResult.subtitles || []);
+        }
         const preview = text.replace(/\s+/g, ' ').slice(0, 1200);
         if (preview) {
           details.preview = preview;
@@ -1328,6 +1365,10 @@ async function browserFallback(url, source) {
     } else if ((resourceType === 'fetch' || resourceType === 'xhr') && /json|javascript|text/i.test(contentType)) {
       try {
         const text = await response.text();
+        const payloadResult = scanPayloadForMedia(text, candidate);
+        if (payloadResult?.stream) {
+          resolveDetectedStream(payloadResult.stream, requestHeaders, contentType, payloadResult.subtitles || []);
+        }
         const preview = text.replace(/\s+/g, ' ').slice(0, 220);
         if (preview) {
           details.preview = preview;
@@ -1453,10 +1494,7 @@ async function browserFallback(url, source) {
       const vidlinkApiResult = await tryVidlinkBrowserApi(page, targetUrl);
 
       if (vidlinkApiResult?.stream) {
-        registerStreamCandidate(vidlinkApiResult.stream);
-        for (const subtitle of vidlinkApiResult.subtitles || []) {
-          subtitles.push(subtitle);
-        }
+        resolveDetectedStream(vidlinkApiResult.stream, {}, '', vidlinkApiResult.subtitles || []);
         return;
       }
     }
@@ -1578,6 +1616,19 @@ async function browserFallback(url, source) {
       navigationTask.then(() => waitForStream(source === 'vidfast' ? 3000 : 1500)),
       new Promise((resolve) => setTimeout(resolve, fallbackTimeoutMs)),
     ]);
+
+    if (resolvedResult?.stream) {
+      const relevantCookies = await context.cookies([...visitedUrls, resolvedResult.stream]);
+      const cookieHeader = buildCookieHeader(relevantCookies);
+
+      return {
+        ...resolvedResult,
+        headers: {
+          ...resolvedResult.headers,
+          ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+        },
+      };
+    }
 
     const stream = bestStream || pickBestStream([...streamCandidates]);
 
