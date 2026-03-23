@@ -71,14 +71,25 @@ async function warmVidfastSession(page, targetUrl) {
   }
 
   try {
-    await page.goto('https://vidfast.pro', {
+    const warmupPage = await page.context().newPage();
+
+    await warmupPage.goto('https://vidfast.pro', {
       waitUntil: 'domcontentloaded',
       timeout: 20000
     });
     console.log(new Date().toISOString(), '[vidfast] warmup visited homepage');
-    await page.waitForTimeout(2000);
+    await warmupPage.waitForTimeout(2000);
+    await warmupPage.close().catch(() => undefined);
   } catch (error) {
     console.log(new Date().toISOString(), '[vidfast] warmup failed', error?.message || String(error));
+  }
+}
+
+function getExpectedVidfastPath(targetUrl) {
+  try {
+    return new URL(targetUrl).pathname;
+  } catch {
+    return '';
   }
 }
 
@@ -255,6 +266,7 @@ async function inspectVidfastPayloads(page) {
 export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   console.log(new Date().toISOString(), '[extractor] starting', targetUrl);
   const browser = await getBrowser(options);
+  const expectedVidfastPath = getExpectedVidfastPath(targetUrl);
 
   const context = await browser.newContext({
     userAgent:
@@ -362,6 +374,17 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       waitUntil: 'domcontentloaded',
       timeout: options.navigationTimeout ?? 30000
     });
+
+    if (isVidfastUrl(targetUrl) && expectedVidfastPath) {
+      const currentPath = getExpectedVidfastPath(page.url());
+      if (currentPath && currentPath !== expectedVidfastPath) {
+        console.log(new Date().toISOString(), '[vidfast] unexpected redirect', page.url());
+        await page.goto(targetUrl, {
+          waitUntil: 'domcontentloaded',
+          timeout: options.navigationTimeout ?? 30000
+        });
+      }
+    }
 
     console.log(new Date().toISOString(), '[extractor] page loaded', targetUrl);
 
