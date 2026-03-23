@@ -198,9 +198,12 @@ async function installVidfastHooks(page, targetUrl) {
 async function inspectVidfastPayloads(page) {
   const payloads = await page.evaluate(() => window.__VIDFAST_CAPTURE__?.payloads || []).catch(() => []);
 
+  console.log(new Date().toISOString(), '[vidfast] captured payload count', payloads.length);
+
   for (const entry of payloads) {
     const streamUrl = extractStreamFromPayload(entry?.body || '');
     if (streamUrl) {
+      console.log(new Date().toISOString(), '[vidfast] extracted stream from payload source', entry?.url || 'unknown');
       return {
         url: streamUrl,
         type: detectType(streamUrl),
@@ -309,9 +312,9 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 
     await page.evaluate(() => window.scrollBy(0, 500)).catch(() => undefined);
     await waitForNetworkSettle(
-      options.settleTimeout ?? (isVidfastUrl(targetUrl) ? 3000 : 2000),
-      options.maxWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 14000 : 10000),
-      options.minWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 7000 : 5000)
+      options.settleTimeout ?? (isVidfastUrl(targetUrl) ? 4000 : 2000),
+      options.maxWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 28000 : 10000),
+      options.minWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 12000 : 5000)
     );
 
     if (!stopIfResolved() && isVidfastUrl(targetUrl)) {

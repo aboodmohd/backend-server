@@ -16,6 +16,10 @@ function normalizeHeaders(headers = {}) {
   }, {});
 }
 
+function isVidfastUrl(url) {
+  return String(url || '').includes('vidfast.pro');
+}
+
 router.post('/', async (req, res) => {
   const { url } = req.body || {};
 
@@ -39,7 +43,7 @@ router.post('/', async (req, res) => {
         if (settled) return;
         settled = true;
         reject(new Error('STREAM_NOT_FOUND'));
-      }, RESOLVE_TIMEOUT_MS);
+      }, isVidfastUrl(url) ? 45000 : RESOLVE_TIMEOUT_MS);
 
       extractVideoUrls(
         url,
@@ -63,7 +67,9 @@ router.post('/', async (req, res) => {
             qualities: []
           });
         },
-        { settleTimeout: 2000, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 10000 }
+        isVidfastUrl(url)
+          ? { settleTimeout: 4000, navigationTimeout: 45000, minWaitAfterLoad: 12000, maxWaitAfterLoad: 28000 }
+          : { settleTimeout: 2000, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 10000 }
       ).catch((error) => {
         if (settled) {
           return;
