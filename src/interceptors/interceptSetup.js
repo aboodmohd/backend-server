@@ -13,8 +13,9 @@ const BLOCKED_URL_PATTERNS = [
 
 export async function setupInterceptors(page, onFound) {
   const state = createDetectorState();
+  const context = page.context();
 
-  await page.route('**/*', async (route) => {
+  await context.route('**/*', async (route) => {
     const request = route.request();
     const url = request.url();
     const resourceType = request.resourceType();

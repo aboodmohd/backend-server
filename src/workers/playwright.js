@@ -278,6 +278,13 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     markActivity(response.url(), response.request().resourceType());
   });
 
+  page.on('framenavigated', (frame) => {
+    const frameUrl = frame.url();
+    if (frameUrl && frameUrl !== 'about:blank' && frame !== page.mainFrame()) {
+      console.log(new Date().toISOString(), '[iframe]', frameUrl);
+    }
+  });
+
   await installVidfastHooks(page, targetUrl);
 
   await setupInterceptors(page, async (result) => {
@@ -297,20 +304,26 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 
     console.log(new Date().toISOString(), '[extractor] page loaded', targetUrl);
 
-    await safeWait(250);
+    await safeWait(isVidfastUrl(targetUrl) ? 2000 : 250);
 
     if (stopIfResolved()) {
       return;
     }
 
     await pokePlayers(page, targetUrl);
-    await safeWait(isVidfastUrl(targetUrl) ? 1500 : 750);
+    await safeWait(isVidfastUrl(targetUrl) ? 3000 : 750);
 
     if (stopIfResolved()) {
       return;
     }
 
     await page.evaluate(() => window.scrollBy(0, 500)).catch(() => undefined);
+    if (isVidfastUrl(targetUrl)) {
+      await page.mouse.click(640, 400).catch(() => undefined);
+      await safeWait(2000);
+      await pokePlayers(page, targetUrl);
+      await safeWait(2000);
+    }
     await waitForNetworkSettle(
       options.settleTimeout ?? (isVidfastUrl(targetUrl) ? 4000 : 2000),
       options.maxWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 28000 : 10000),
