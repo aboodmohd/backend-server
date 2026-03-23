@@ -1,3 +1,5 @@
+process.env.PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || '0';
+
 const express = require('express');
 const proxyRoute = require('./routes/proxy');
 const resolveRoute = require('./routes/resolve');

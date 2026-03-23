@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: backend
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: 0
+      - key: PLAYWRIGHT_HEADLESS
+        value: "true"
