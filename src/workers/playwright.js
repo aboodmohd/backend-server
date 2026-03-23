@@ -42,6 +42,75 @@ function shouldTrackActivity(url, resourceType) {
   ].some((pattern) => url.includes(pattern));
 }
 
+function isVidfastUrl(url) {
+  return String(url || '').includes('vidfast.pro');
+}
+
+async function clickFirstVisible(frame, selectors) {
+  for (const selector of selectors) {
+    try {
+      const locator = frame.locator(selector).first();
+      if (await locator.isVisible({ timeout: 400 }).catch(() => false)) {
+        await locator.click({ timeout: 500 }).catch(() => undefined);
+        return true;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return false;
+}
+
+async function pokePlayers(page, targetUrl) {
+  const isVidfast = isVidfastUrl(targetUrl);
+  const selectors = [
+    'button',
+    '.play',
+    '.vjs-play-control',
+    '[data-play]',
+    '[class*="play"]',
+    '[aria-label*="play" i]',
+    'video',
+    'iframe'
+  ];
+
+  for (const frame of page.frames()) {
+    await clickFirstVisible(frame, selectors);
+
+    await frame.evaluate((shouldBeAggressive) => {
+      const video = document.querySelector('video');
+      if (video && typeof video.play === 'function') {
+        video.muted = true;
+        void video.play().catch(() => undefined);
+      }
+
+      if (!shouldBeAggressive) {
+        return;
+      }
+
+      const centerX = Math.floor(window.innerWidth / 2);
+      const centerY = Math.floor(window.innerHeight / 2);
+      const target = document.elementFromPoint(centerX, centerY) || document.body;
+
+      ['pointerdown', 'mousedown', 'mouseup', 'click'].forEach((eventName) => {
+        target?.dispatchEvent(new MouseEvent(eventName, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: centerX,
+          clientY: centerY
+        }));
+      });
+    }, isVidfast).catch(() => undefined);
+  }
+
+  if (isVidfast) {
+    await page.keyboard.press('Space').catch(() => undefined);
+    await page.keyboard.press('Enter').catch(() => undefined);
+  }
+}
+
 export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   console.log(new Date().toISOString(), '[extractor] starting', targetUrl);
   const browser = await getBrowser(options);
@@ -126,14 +195,8 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       return;
     }
 
-    const playButton = page
-      .locator('button, .play, .vjs-play-control, [data-play], [class*="play"], [aria-label*="play" i]')
-      .first();
-
-    if (await playButton.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await playButton.click().catch(() => undefined);
-      await safeWait(750);
-    }
+    await pokePlayers(page, targetUrl);
+    await safeWait(isVidfastUrl(targetUrl) ? 1500 : 750);
 
     if (stopIfResolved()) {
       return;
@@ -141,9 +204,9 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 
     await page.evaluate(() => window.scrollBy(0, 500)).catch(() => undefined);
     await waitForNetworkSettle(
-      options.settleTimeout ?? 2000,
-      options.maxWaitAfterLoad ?? 10000,
-      options.minWaitAfterLoad ?? 5000
+      options.settleTimeout ?? (isVidfastUrl(targetUrl) ? 3000 : 2000),
+      options.maxWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 14000 : 10000),
+      options.minWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 7000 : 5000)
     );
   } catch (error) {
     if (isExpectedCloseError(error)) {
