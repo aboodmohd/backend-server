@@ -1257,7 +1257,7 @@ async function browserFallback(url, source) {
     }
 
     if (isMediaUrl(candidate)) {
-      registerStreamCandidate(candidate);
+      resolveDetectedStream(candidate);
     }
 
     if (isSubtitleUrl(candidate)) {
@@ -1306,7 +1306,7 @@ async function browserFallback(url, source) {
       return;
     }
 
-    registerStreamCandidate(candidate, request.headers());
+    resolveDetectedStream(candidate, request.headers());
   };
 
   const captureResponse = async (response) => {
@@ -1317,7 +1317,7 @@ async function browserFallback(url, source) {
     const contentType = response.headers()['content-type'] || '';
 
     captureUrl(candidate);
-    registerStreamCandidate(candidate, requestHeaders, contentType);
+    resolveDetectedStream(candidate, requestHeaders, contentType);
 
     if (!shouldTraceNetworkCandidate(source, candidate, resourceType) || tracedNetworkUrls.has(`response:${candidate}`)) {
       return;
