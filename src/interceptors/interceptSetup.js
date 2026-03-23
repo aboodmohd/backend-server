@@ -1,4 +1,4 @@
-import { createDetectorState, detectType, isVideoContentType, isVideoUrl } from './index.js';
+import { createDetectorState, detectType, extractStreamFromPayload, isVideoContentType, isVideoUrl } from './index.js';
 
 export async function setupInterceptors(page, onFound) {
   const state = createDetectorState();
@@ -6,6 +6,10 @@ export async function setupInterceptors(page, onFound) {
   await page.route('**/*', async (route) => {
     const request = route.request();
     const url = request.url();
+
+    if (['document', 'fetch', 'xhr', 'media'].includes(request.resourceType())) {
+      console.log(new Date().toISOString(), '[request]', request.resourceType(), url);
+    }
 
     if (isVideoUrl(url, state)) {
       onFound({
@@ -24,6 +28,10 @@ export async function setupInterceptors(page, onFound) {
     const url = response.url();
     const contentType = response.headers()['content-type'] || '';
 
+    if (['document', 'fetch', 'xhr', 'media'].includes(response.request().resourceType())) {
+      console.log(new Date().toISOString(), '[response]', response.request().resourceType(), response.status(), contentType, url);
+    }
+
     if (isVideoUrl(url, state) || isVideoContentType(contentType)) {
       onFound({
         url,
@@ -36,6 +44,33 @@ export async function setupInterceptors(page, onFound) {
         via: 'response',
         contentType
       });
+      return;
+    }
+
+    if (!/json|javascript|text/i.test(contentType)) {
+      return;
+    }
+
+    try {
+      const body = await response.text();
+      const payloadUrl = extractStreamFromPayload(body);
+      if (!payloadUrl || !isVideoUrl(payloadUrl, state)) {
+        return;
+      }
+
+      onFound({
+        url: payloadUrl,
+        type: detectType(payloadUrl, contentType),
+        headers: {
+          ...response.request().headers(),
+          ...response.headers()
+        },
+        foundAt: new Date().toISOString(),
+        via: 'payload',
+        contentType
+      });
+    } catch {
+      // ignore unreadable bodies
     }
   });
 }

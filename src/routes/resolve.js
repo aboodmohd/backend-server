@@ -19,6 +19,8 @@ function normalizeHeaders(headers = {}) {
 router.post('/', async (req, res) => {
   const { url } = req.body || {};
 
+  console.log(new Date().toISOString(), '[resolve] incoming', url);
+
   if (!url) {
     return res.status(400).json({ success: false, error: 'url required' });
   }
@@ -26,6 +28,7 @@ router.post('/', async (req, res) => {
   const cacheKey = `stream:${url}`;
   const cached = cache.get(cacheKey);
   if (cached) {
+    console.log(new Date().toISOString(), '[resolve] cache hit', url);
     return res.json({ ...cached, cached: true });
   }
 
@@ -44,6 +47,8 @@ router.post('/', async (req, res) => {
           if (settled || !found?.url) {
             return;
           }
+
+          console.log(new Date().toISOString(), '[resolve] found', found.type, found.via, found.url);
 
           settled = true;
           clearTimeout(timeoutId);
@@ -70,8 +75,10 @@ router.post('/', async (req, res) => {
     });
 
     cache.set(cacheKey, result, ONE_HOUR_MS);
+    console.log(new Date().toISOString(), '[resolve] success', result.url);
     return res.json(result);
   } catch (error) {
+    console.log(new Date().toISOString(), '[resolve] failed', error?.message || 'STREAM_NOT_FOUND');
     return res.status(404).json({
       success: false,
       error: error?.message || 'STREAM_NOT_FOUND'

@@ -22,6 +22,8 @@ const VIDEO_CONTENT_TYPES = [
   'video/'
 ];
 
+const PAYLOAD_URL_REGEX = /https?:\/\/[^"'\s<>()]+/gi;
+
 function normalizeUrlKey(url) {
   return String(url || '').split('?')[0].toLowerCase();
 }
@@ -60,4 +62,28 @@ export function detectType(url, contentType = '') {
   if (/\.mkv/i.test(url)) return 'MKV';
   if (/\.mov/i.test(url)) return 'MOV';
   return 'STREAM';
+}
+
+export function extractStreamFromPayload(payload) {
+  const text = String(payload || '');
+  const matches = text.match(PAYLOAD_URL_REGEX) || [];
+
+  for (const match of matches) {
+    const candidate = match.replace(/\\u0026/g, '&').replace(/\\\//g, '/');
+    if (VIDEO_PATTERNS.some((pattern) => pattern.test(candidate))) {
+      return candidate;
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(text);
+    const candidate = parsed?.stream?.playlist || parsed?.stream?.url || parsed?.url || parsed?.file;
+    if (candidate && VIDEO_PATTERNS.some((pattern) => pattern.test(candidate))) {
+      return candidate;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
 }

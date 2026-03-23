@@ -4,6 +4,7 @@ import { setupInterceptors } from '../interceptors/interceptSetup.js';
 const BLOCKED_RESOURCE_PATTERN = '**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf,css}';
 
 export async function extractVideoUrls(targetUrl, onFound, options = {}) {
+  console.log(new Date().toISOString(), '[extractor] starting', targetUrl);
   const browser = await chromium.launch({
     channel: 'chromium',
     headless: options.headless ?? true,
@@ -45,9 +46,11 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 
   try {
     await page.goto(targetUrl, {
-      waitUntil: 'networkidle',
+      waitUntil: 'domcontentloaded',
       timeout: options.navigationTimeout ?? 30000
     });
+
+    console.log(new Date().toISOString(), '[extractor] page loaded', targetUrl);
 
     await page.waitForTimeout(1000);
 
@@ -63,10 +66,12 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     await page.evaluate(() => window.scrollBy(0, 500)).catch(() => undefined);
     await page.waitForTimeout(options.settleTimeout ?? 5000);
   } catch (error) {
+    console.log(new Date().toISOString(), '[extractor] navigation error', error?.message || String(error));
     if (!String(error?.message || '').toLowerCase().includes('timeout')) {
       throw error;
     }
   } finally {
+    console.log(new Date().toISOString(), '[extractor] closing', targetUrl);
     await context.close().catch(() => undefined);
     await browser.close().catch(() => undefined);
   }
