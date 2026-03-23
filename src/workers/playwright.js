@@ -371,6 +371,16 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     } catch {}
   });
 
+  page.on('pageerror', (error) => {
+    console.log(new Date().toISOString(), '[pageerror]', error?.message || String(error));
+  });
+
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') {
+      console.log(new Date().toISOString(), '[console:error]', msg.text());
+    }
+  });
+
   page.on('framenavigated', (frame) => {
     const frameUrl = frame.url();
     if (frameUrl && frameUrl !== 'about:blank' && frame !== page.mainFrame()) {
