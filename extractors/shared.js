@@ -1032,7 +1032,28 @@ async function extractDirectMedia(url, scope) {
     };
   }
 
-  const html = await fetchText(url, { headers: { Referer: url } });
+  let html;
+
+  try {
+    html = await fetchText(url, { headers: { Referer: url } });
+  } catch (error) {
+    const status = error?.response?.status;
+
+    if (status === 403) {
+      throw createError(403, 'PROVIDER_BLOCKED', `Provider page is blocked by anti-bot protection for ${scope}`);
+    }
+
+    if (status === 404 || status === 410 || status === 451) {
+      logStep(scope, 'direct media request returned non-fatal status', { status, url });
+      return {
+        stream: null,
+        subtitles: [],
+        iframes: [],
+      };
+    }
+
+    throw error;
+  }
 
   if (/sorry, you have been blocked|cloudflare ray id|access denied/i.test(html)) {
     throw createError(403, 'PROVIDER_BLOCKED', `Provider page is blocked by anti-bot protection for ${scope}`);
@@ -1083,6 +1104,7 @@ async function getBrowser() {
     const headless = process.env.PLAYWRIGHT_HEADLESS !== 'false';
 
     browserPromise = chromium.launch({
+      channel: 'chromium',
       headless,
       args: [
         '--disable-blink-features=AutomationControlled',
