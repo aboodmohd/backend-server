@@ -65,6 +65,28 @@ async function logVidfastPageState(page, targetUrl) {
   }
 }
 
+async function patchVidfastVisibility(page, targetUrl) {
+  if (!isVidfastUrl(targetUrl)) {
+    return;
+  }
+
+  await page.evaluate(() => {
+    try {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get: () => 'visible'
+      });
+      Object.defineProperty(document, 'hidden', {
+        configurable: true,
+        get: () => false
+      });
+    } catch {}
+
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('focus'));
+  }).catch(() => undefined);
+}
+
 async function warmVidfastSession(page, targetUrl) {
   if (!isVidfastUrl(targetUrl)) {
     return;
@@ -339,13 +361,13 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     const status = response.status();
     console.log(new Date().toISOString(), '[vidfast:xhr]', status, url);
 
-    if (!url.includes('vidfast') && !url.includes('api')) {
+    if (!url.includes('/api/') && !url.includes('source') && !url.includes('stream') && !url.includes('vidfast')) {
       return;
     }
 
     try {
       const body = await response.text();
-      console.log(new Date().toISOString(), '[vidfast:xhr-body]', body.slice(0, 500));
+      console.log(new Date().toISOString(), '[vidfast:xhr-body]', url, '->', body.slice(0, 500));
     } catch {}
   });
 
@@ -389,6 +411,7 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     console.log(new Date().toISOString(), '[extractor] page loaded', targetUrl);
 
     await logVidfastPageState(page, targetUrl);
+    await patchVidfastVisibility(page, targetUrl);
 
     await safeWait(isVidfastUrl(targetUrl) ? 2000 : 250);
 
