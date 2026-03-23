@@ -1,21 +1,23 @@
 {
-  "name": "backend",
-  "version": "1.0.0",
-  "main": "server.js",
+  "name": "video-resolver-backend",
+  "version": "2.0.0",
+  "private": true,
+  "main": "dist/server.js",
   "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "PLAYWRIGHT_BROWSERS_PATH=0 tsx watch src/server.ts",
     "postinstall": "PLAYWRIGHT_BROWSERS_PATH=0 playwright install chromium",
-    "start": "PLAYWRIGHT_BROWSERS_PATH=0 node server.js",
-    "dev": "node --watch server.js"
+    "start": "PLAYWRIGHT_BROWSERS_PATH=0 node dist/server.js"
   },
   "dependencies": {
-    "axios": "^1.12.2",
-    "cheerio": "^1.1.2",
     "express": "^5.1.0",
-    "node-cache": "^5.1.2",
-    "playwright": "^1.55.1",
-    "playwright-extra": "^4.3.6",
-    "puppeteer": "^24.40.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "ioredis": "^5.8.0",
+    "playwright": "^1.55.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^22.18.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
   }
 }
