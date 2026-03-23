@@ -1222,8 +1222,8 @@ async function browserFallback(url, source) {
 
     const registered = registerStreamCandidate(candidate, requestHeaders, contentType);
 
-    if (!registered && !bestStream) {
-      bestStream = candidate;
+    if (!registered) {
+      return false;
     }
 
     if (Array.isArray(subtitleList) && subtitleList.length > 0) {

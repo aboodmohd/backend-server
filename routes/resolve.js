@@ -2,6 +2,7 @@ const express = require('express');
 const { buildProxyUrl } = require('./proxy');
 const universal = require('../extractors/universal');
 const { extractQualities } = require('../utils/hls');
+const { isMediaUrl } = require('../utils/request');
 
 const router = express.Router();
 
@@ -86,6 +87,11 @@ async function handleResolve(req, res, next) {
 
   try {
     const result = await universal.resolve(parsedUrl.toString(), { quality });
+
+    if (!result?.stream || (!isMediaUrl(result.stream) && result.stream === parsedUrl.toString())) {
+      throw createError(502, 'INVALID_STREAM_RESULT', 'Resolver returned a page URL instead of a playable media stream');
+    }
+
     const headers = {
       ...parseEmbeddedHeaders(result.stream),
       ...normalizeHeaders(result.headers || {}),
