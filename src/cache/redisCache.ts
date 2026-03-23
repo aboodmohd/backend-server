@@ -1,0 +1,84 @@
+import Redis from 'ioredis';
+import type { CacheStore, ResolveResponse } from '../types';
+import { logger } from '../utils/logger';
+
+const DEFAULT_TTL_SECONDS = Number(process.env.STREAM_CACHE_TTL_SECONDS || 3600);
+
+type MemoryEntry = {
+  value: ResolveResponse;
+  expiresAt: number;
+};
+
+class RedisCache implements CacheStore {
+  private readonly client: Redis | null;
+  private readonly memory = new Map<string, MemoryEntry>();
+  private connected = false;
+
+  constructor() {
+    const redisUrl = process.env.REDIS_URL;
+    if (!redisUrl) {
+      this.client = null;
+      logger.warn('REDIS_URL is not configured, using in-memory cache fallback');
+      return;
+    }
+
+    this.client = new Redis(redisUrl, {
+      lazyConnect: true,
+      maxRetriesPerRequest: 1,
+      enableOfflineQueue: false,
+    });
+
+    this.client.on('error', (error) => {
+      logger.error('redis error', { message: error.message });
+    });
+  }
+
+  async get(key: string): Promise<ResolveResponse | null> {
+    if (!this.client) {
+      const entry = this.memory.get(key);
+      if (!entry || entry.expiresAt < Date.now()) {
+        this.memory.delete(key);
+        return null;
+      }
+      return entry.value;
+    }
+
+    await this.ensureConnected();
+    const raw = await this.client.get(key);
+    return raw ? (JSON.parse(raw) as ResolveResponse) : null;
+  }
+
+  async set(key: string, value: ResolveResponse, ttlSeconds = DEFAULT_TTL_SECONDS): Promise<void> {
+    if (!this.client) {
+      this.memory.set(key, {
+        value,
+        expiresAt: Date.now() + ttlSeconds * 1000,
+      });
+      return;
+    }
+
+    await this.ensureConnected();
+    await this.client.set(key, JSON.stringify(value), 'EX', ttlSeconds);
+  }
+
+  async disconnect(): Promise<void> {
+    if (!this.client || !this.connected) {
+      return;
+    }
+
+    await this.client.quit().catch(() => undefined);
+    this.connected = false;
+  }
+
+  private async ensureConnected(): Promise<void> {
+    if (!this.client || this.connected) {
+      return;
+    }
+
+    await this.client.connect();
+    this.connected = true;
+  }
+}
+
+export const redisCache = new RedisCache();
+export const createCacheKey = (url: string): string => `stream:${url}`;
