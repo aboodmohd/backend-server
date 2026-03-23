@@ -65,24 +65,35 @@ export function detectType(url, contentType = '') {
 }
 
 export function extractStreamFromPayload(payload) {
-  const text = String(payload || '');
-  const matches = text.match(PAYLOAD_URL_REGEX) || [];
-
-  for (const match of matches) {
-    const candidate = match.replace(/\\u0026/g, '&').replace(/\\\//g, '/');
-    if (VIDEO_PATTERNS.some((pattern) => pattern.test(candidate))) {
-      return candidate;
-    }
-  }
+  const text = String(payload || '').trim();
 
   try {
     const parsed = JSON.parse(text);
-    const candidate = parsed?.stream?.playlist || parsed?.stream?.url || parsed?.url || parsed?.file;
+    const candidate =
+      parsed?.stream?.playlist ||
+      parsed?.stream?.url ||
+      parsed?.playlist ||
+      parsed?.url ||
+      parsed?.file;
+
     if (candidate && VIDEO_PATTERNS.some((pattern) => pattern.test(candidate))) {
       return candidate;
     }
   } catch {
-    return null;
+    // Fall back to regex extraction below.
+  }
+
+  const matches = text.match(PAYLOAD_URL_REGEX) || [];
+
+  for (const match of matches) {
+    const candidate = match
+      .replace(/\\u0026/g, '&')
+      .replace(/\\\//g, '/')
+      .replace(/\\"/g, '"');
+
+    if (VIDEO_PATTERNS.some((pattern) => pattern.test(candidate))) {
+      return candidate;
+    }
   }
 
   return null;
