@@ -3,6 +3,11 @@ import { setupInterceptors } from '../interceptors/interceptSetup.js';
 
 const BLOCKED_RESOURCE_PATTERN = '**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf,css}';
 
+function isExpectedCloseError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return message.includes('target page, context or browser has been closed');
+}
+
 export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   console.log(new Date().toISOString(), '[extractor] starting', targetUrl);
   const browser = await chromium.launch({
@@ -28,6 +33,22 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   const page = await context.newPage();
   let firstResultResolved = false;
 
+  const stopIfResolved = () => firstResultResolved || page.isClosed();
+
+  const safeWait = async (ms) => {
+    if (stopIfResolved()) {
+      return;
+    }
+
+    try {
+      await page.waitForTimeout(ms);
+    } catch (error) {
+      if (!isExpectedCloseError(error)) {
+        throw error;
+      }
+    }
+  };
+
   await page.route(BLOCKED_RESOURCE_PATTERN, (route) => route.abort());
   await page.route('**/*google-analytics*', (route) => route.abort().catch(() => route.continue()));
   await page.route('**/*googletagmanager*', (route) => route.abort().catch(() => route.continue()));
@@ -52,7 +73,11 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 
     console.log(new Date().toISOString(), '[extractor] page loaded', targetUrl);
 
-    await page.waitForTimeout(1000);
+    await safeWait(1000);
+
+    if (stopIfResolved()) {
+      return;
+    }
 
     const playButton = page
       .locator('button, .play, .vjs-play-control, [data-play], [class*="play"], [aria-label*="play" i]')
@@ -60,12 +85,20 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 
     if (await playButton.isVisible({ timeout: 2000 }).catch(() => false)) {
       await playButton.click().catch(() => undefined);
-      await page.waitForTimeout(2000);
+      await safeWait(2000);
+    }
+
+    if (stopIfResolved()) {
+      return;
     }
 
     await page.evaluate(() => window.scrollBy(0, 500)).catch(() => undefined);
-    await page.waitForTimeout(options.settleTimeout ?? 5000);
+    await safeWait(options.settleTimeout ?? 5000);
   } catch (error) {
+    if (isExpectedCloseError(error)) {
+      return;
+    }
+
     console.log(new Date().toISOString(), '[extractor] navigation error', error?.message || String(error));
     if (!String(error?.message || '').toLowerCase().includes('timeout')) {
       throw error;
