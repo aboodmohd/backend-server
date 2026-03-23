@@ -1216,10 +1216,14 @@ async function browserFallback(url, source) {
   };
 
   const resolveDetectedStream = (candidate, requestHeaders = {}, contentType = '', subtitleList = []) => {
+    if (!candidate) {
+      return false;
+    }
+
     const registered = registerStreamCandidate(candidate, requestHeaders, contentType);
 
-    if (!registered) {
-      return false;
+    if (!registered && !bestStream) {
+      bestStream = candidate;
     }
 
     if (Array.isArray(subtitleList) && subtitleList.length > 0) {
