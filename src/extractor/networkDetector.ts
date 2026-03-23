@@ -3,6 +3,7 @@ import type { DetectorHit, StreamType } from '../types';
 import { logger } from '../utils/logger';
 
 const VIDEO_EXTENSION_REGEX = /\.(m3u8|mp4|webm|mkv|mov)(?:$|[?#])/i;
+const URL_REGEX = /https?:\/\/[^"'\s<>()]+/gi;
 const ANALYTICS_PATTERNS = [
   'google-analytics.com',
   'googletagmanager.com',
@@ -59,6 +60,28 @@ function buildHit(url: string, requestHeaders: Record<string, string>, contentTy
   };
 }
 
+function extractPayloadHit(payload: string, requestHeaders: Record<string, string>, sourceUrl: string): DetectorHit | null {
+  const matches = payload.match(URL_REGEX) || [];
+
+  for (const match of matches) {
+    const cleaned = match.replace(/\\u0026/g, '&').replace(/\\\//g, '/');
+    const hit = buildHit(cleaned, requestHeaders, '', undefined, 'payload');
+    if (hit) {
+      return hit;
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(payload) as { stream?: { playlist?: string; type?: string; url?: string } };
+    const candidate = parsed?.stream?.playlist || parsed?.stream?.url;
+    if (candidate) {
+      return buildHit(candidate, requestHeaders, parsed?.stream?.type === 'hls' ? 'application/vnd.apple.mpegurl' : '', undefined, 'payload');
+    }
+  } catch {}
+
+  return null;
+}
+
 export async function optimizePage(page: Page): Promise<void> {
   await page.route('**/*', async (route) => {
     const request = route.request();
@@ -90,30 +113,54 @@ export function attachNetworkDetector(page: Page, onDetected: (hit: DetectorHit)
 
   const handleResponse = async (response: Response): Promise<void> => {
     const hit = buildHit(response.url(), response.request().headers(), response.headers()['content-type'] || '', response.status(), 'response');
-    if (!hit || seen.has(hit.stream)) {
+    if (hit && !seen.has(hit.stream)) {
+      seen.add(hit.stream);
+      logger.info('network response', {
+        url: hit.stream,
+        type: hit.type,
+        via: hit.via,
+        status: hit.status,
+        contentType: hit.contentType,
+        resourceType: response.request().resourceType(),
+      });
+      onDetected(hit);
       return;
     }
 
-    seen.add(hit.stream);
-    logger.info('network response', {
-      url: hit.stream,
-      type: hit.type,
-      via: hit.via,
-      status: hit.status,
-      contentType: hit.contentType,
-      resourceType: response.request().resourceType(),
-    });
-    onDetected(hit);
+    const contentType = (response.headers()['content-type'] || '').toLowerCase();
+    if (!/json|javascript|text/.test(contentType)) {
+      return;
+    }
+
+    try {
+      const body = await response.text();
+      const payloadHit = extractPayloadHit(body, response.request().headers(), response.url());
+      if (!payloadHit || seen.has(payloadHit.stream)) {
+        return;
+      }
+
+      seen.add(payloadHit.stream);
+      logger.info('payload stream detected', {
+        url: payloadHit.stream,
+        type: payloadHit.type,
+        sourceUrl: response.url(),
+      });
+      onDetected(payloadHit);
+    } catch {
+      logger.warn('response body inspection failed', { url: response.url() });
+    }
+  };
+
+  const responseListener = (response: Response): void => {
+    void handleResponse(response);
   };
 
   page.on('request', handleRequest);
-  page.on('response', (response) => {
-    void handleResponse(response);
-  });
+  page.on('response', responseListener);
 
   return () => {
     page.off('request', handleRequest);
-    page.off('response', handleResponse);
+    page.off('response', responseListener);
   };
 }
 

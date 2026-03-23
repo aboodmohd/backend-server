@@ -57,23 +57,37 @@ export async function resolveStream(url: string): Promise<ResolvedStream> {
 
   const lease = await browserPool.acquire();
   let resolved = false;
+  let timeoutId: NodeJS.Timeout | undefined;
+  let stopDetector: (() => void) | undefined;
 
   try {
     logger.info('page navigation', { url });
 
-    const detected = new Promise<ResolvedStream>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('STREAM_NOT_FOUND'));
-      }, EXTRACTION_TIMEOUT_MS);
-
-      const stop = attachNetworkDetector(lease.page, async (hit: DetectorHit) => {
+    const detected = new Promise<ResolvedStream>((resolve) => {
+      timeoutId = setTimeout(() => {
         if (resolved) {
           return;
         }
 
         resolved = true;
-        clearTimeout(timeout);
-        stop();
+        stopDetector?.();
+        resolve({
+          stream: '',
+          type: 'video',
+          headers: {},
+        });
+      }, EXTRACTION_TIMEOUT_MS);
+
+      stopDetector = attachNetworkDetector(lease.page, async (hit: DetectorHit) => {
+        if (resolved) {
+          return;
+        }
+
+        resolved = true;
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+        stopDetector?.();
 
         const cookies = await lease.context.cookies().catch(() => []);
         const payload: ResolvedStream = {
@@ -99,10 +113,18 @@ export async function resolveStream(url: string): Promise<ResolvedStream> {
     await triggerPlayback(lease.page);
 
     const result = await detected;
+    if (!result.stream) {
+      throw new Error('STREAM_NOT_FOUND');
+    }
+
     await redisCache.set(cacheKey, result);
     logger.info('cache set', { key: cacheKey });
     return result;
   } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+    stopDetector?.();
     await lease.release();
   }
 }
