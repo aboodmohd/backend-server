@@ -3,7 +3,7 @@ import { createCacheKey, redisCache } from '../cache/redisCache';
 import type { DetectorHit, ResolveResponse } from '../types';
 import { logger } from '../utils/logger';
 import { browserPool } from './browserPool';
-import { attachNetworkDetector } from './networkDetector';
+import { attachNetworkDetector, extractPayloadHit } from './networkDetector';
 
 const EXTRACTION_TIMEOUT_MS = Number(process.env.EXTRACTION_TIMEOUT_MS || 8000);
 const CLICK_SELECTORS = ['button', '.play', '.vjs-play-control', '[data-play]'];
@@ -47,6 +47,30 @@ async function tryPlaybackInteractions(page: Page): Promise<void> {
   }
 }
 
+async function scanPageForEmbeddedStream(page: Page): Promise<DetectorHit | null> {
+  try {
+    const content = await page.content();
+    const contentHit = extractPayloadHit(content, {});
+    if (contentHit) {
+      return contentHit;
+    }
+  } catch {
+    logger.warn('page content inspection failed');
+  }
+
+  try {
+    const scriptText = await page.evaluate(() => {
+      return Array.from(document.scripts)
+        .map((script) => script.textContent || '')
+        .join('\n');
+    });
+    return extractPayloadHit(scriptText, {});
+  } catch {
+    logger.warn('script inspection failed');
+    return null;
+  }
+}
+
 export async function resolveStream(url: string): Promise<ResolveResponse> {
   const cacheKey = createCacheKey(url);
   const cached = await redisCache.get(cacheKey);
@@ -64,7 +88,7 @@ export async function resolveStream(url: string): Promise<ResolveResponse> {
   try {
     logger.info('page navigation', { url });
 
-    const detected = new Promise<ResolveResponse>((resolve, reject) => {
+    const detected = new Promise<ResolveResponse>((resolve) => {
       timeoutId = setTimeout(() => {
         if (settled) {
           return;
@@ -72,7 +96,7 @@ export async function resolveStream(url: string): Promise<ResolveResponse> {
         settled = true;
         detachDetector?.();
         logger.warn('extraction timeout', { url, timeoutMs: EXTRACTION_TIMEOUT_MS });
-        reject(new Error('STREAM_NOT_FOUND'));
+        resolve({ stream: '', type: 'video', headers: {} });
       }, EXTRACTION_TIMEOUT_MS);
 
       detachDetector = attachNetworkDetector(lease.page, async (hit: DetectorHit) => {
@@ -109,7 +133,40 @@ export async function resolveStream(url: string): Promise<ResolveResponse> {
     await lease.page.goto(url, { waitUntil: 'domcontentloaded', timeout: EXTRACTION_TIMEOUT_MS });
     await tryPlaybackInteractions(lease.page);
 
+    if (!settled) {
+      const embeddedHit = await scanPageForEmbeddedStream(lease.page);
+      if (embeddedHit) {
+        settled = true;
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+        detachDetector?.();
+
+        const cookies = await lease.context.cookies().catch(() => []);
+        const payload: ResolveResponse = {
+          stream: embeddedHit.stream,
+          type: embeddedHit.type,
+          headers: withCookies(embeddedHit.headers, cookies),
+        };
+
+        logger.info('embedded stream resolved', {
+          url: embeddedHit.stream,
+          type: embeddedHit.type,
+          via: embeddedHit.via,
+        });
+
+        await lease.page.close().catch(() => undefined);
+        await redisCache.set(cacheKey, payload);
+        logger.info('cache set', { key: cacheKey });
+        return payload;
+      }
+    }
+
     const result = await detected;
+    if (!result.stream) {
+      throw new Error('STREAM_NOT_FOUND');
+    }
+
     await redisCache.set(cacheKey, result);
     logger.info('cache set', { key: cacheKey });
     return result;

@@ -69,7 +69,7 @@ function createHit(
   };
 }
 
-function extractPayloadHit(payload: string, requestHeaders: Record<string, string>): DetectorHit | null {
+export function extractPayloadHit(payload: string, requestHeaders: Record<string, string>): DetectorHit | null {
   const matches = payload.match(URL_IN_PAYLOAD_REGEX) || [];
   for (const match of matches) {
     const cleaned = match.replace(/\\u0026/g, '&').replace(/\\\//g, '/');
@@ -130,23 +130,29 @@ export function attachNetworkDetector(page: Page, onDetected: (hit: DetectorHit)
   };
 
   const handleRequest = (request: Request): void => {
+    if (['document', 'fetch', 'xhr', 'media', 'script'].includes(request.resourceType())) {
+      logger.info('network request', { url: request.url(), resourceType: request.resourceType() });
+    }
+
     const hit = createHit(request.url(), request.headers(), '', undefined, 'request');
     if (hit) {
-      logger.info('network request', { url: request.url(), resourceType: request.resourceType() });
       emit(hit);
     }
   };
 
   const handleResponse = async (response: Response): Promise<void> => {
     const contentType = response.headers()['content-type'] || '';
-    const hit = createHit(response.url(), response.request().headers(), contentType, response.status(), 'response');
-    if (hit) {
+    if (['document', 'fetch', 'xhr', 'media', 'script'].includes(response.request().resourceType())) {
       logger.info('network response', {
         url: response.url(),
         status: response.status(),
         contentType,
         resourceType: response.request().resourceType(),
       });
+    }
+
+    const hit = createHit(response.url(), response.request().headers(), contentType, response.status(), 'response');
+    if (hit) {
       emit(hit);
       return;
     }
