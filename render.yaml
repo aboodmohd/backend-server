@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: video-resolver-backend
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: 0
+      - key: PLAYWRIGHT_HEADLESS
+        value: "true"
+      - key: BROWSER_POOL_SIZE
+        value: "3"
+      - key: EXTRACTION_TIMEOUT_MS
+        value: "8000"
