@@ -1,7 +1,25 @@
 import { chromium } from 'playwright';
 import { setupInterceptors } from '../interceptors/interceptSetup.js';
 
-const BLOCKED_RESOURCE_PATTERN = '**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf,css}';
+let browserPromise;
+
+function getBrowser(options = {}) {
+  if (!browserPromise) {
+    browserPromise = chromium.launch({
+      channel: 'chromium',
+      headless: options.headless ?? true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
+      ]
+    });
+  }
+
+  return browserPromise;
+}
 
 function isExpectedCloseError(error) {
   const message = String(error?.message || error || '').toLowerCase();
@@ -10,17 +28,7 @@ function isExpectedCloseError(error) {
 
 export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   console.log(new Date().toISOString(), '[extractor] starting', targetUrl);
-  const browser = await chromium.launch({
-    channel: 'chromium',
-    headless: options.headless ?? true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-blink-features=AutomationControlled',
-      '--disable-dev-shm-usage',
-      '--disable-gpu'
-    ]
-  });
+  const browser = await getBrowser(options);
 
   const context = await browser.newContext({
     userAgent:
@@ -49,13 +57,6 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     }
   };
 
-  await page.route(BLOCKED_RESOURCE_PATTERN, (route) => route.abort());
-  await page.route('**/*google-analytics*', (route) => route.abort().catch(() => route.continue()));
-  await page.route('**/*googletagmanager*', (route) => route.abort().catch(() => route.continue()));
-  await page.route('**/*doubleclick*', (route) => route.abort().catch(() => route.continue()));
-  await page.route('**/*umami*', (route) => route.abort().catch(() => route.continue()));
-  await page.route('**/*cdn-cgi/rum*', (route) => route.abort().catch(() => route.continue()));
-
   await setupInterceptors(page, async (result) => {
     onFound(result);
 
@@ -73,7 +74,7 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 
     console.log(new Date().toISOString(), '[extractor] page loaded', targetUrl);
 
-    await safeWait(1000);
+    await safeWait(250);
 
     if (stopIfResolved()) {
       return;
@@ -85,7 +86,7 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 
     if (await playButton.isVisible({ timeout: 2000 }).catch(() => false)) {
       await playButton.click().catch(() => undefined);
-      await safeWait(2000);
+      await safeWait(750);
     }
 
     if (stopIfResolved()) {
@@ -93,7 +94,7 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     }
 
     await page.evaluate(() => window.scrollBy(0, 500)).catch(() => undefined);
-    await safeWait(options.settleTimeout ?? 5000);
+    await safeWait(options.settleTimeout ?? 2500);
   } catch (error) {
     if (isExpectedCloseError(error)) {
       return;
@@ -106,6 +107,9 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   } finally {
     console.log(new Date().toISOString(), '[extractor] closing', targetUrl);
     await context.close().catch(() => undefined);
-    await browser.close().catch(() => undefined);
   }
+}
+
+export async function warmBrowser() {
+  await getBrowser();
 }

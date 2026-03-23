@@ -4,6 +4,7 @@ import extractRoute from './routes/extract.js';
 import streamRoute from './routes/stream.js';
 import downloadRoute from './routes/download.js';
 import resolveRoute from './routes/resolve.js';
+import { warmBrowser } from './workers/playwright.js';
 
 const app = express();
 
@@ -29,4 +30,9 @@ app.use('/resolve', resolveRoute);
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
+  warmBrowser().then(() => {
+    console.log(new Date().toISOString(), '[extractor] browser warmed');
+  }).catch((error) => {
+    console.log(new Date().toISOString(), '[extractor] browser warm failed', error?.message || String(error));
+  });
 });

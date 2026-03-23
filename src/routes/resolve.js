@@ -63,7 +63,7 @@ router.post('/', async (req, res) => {
             qualities: []
           });
         },
-        { settleTimeout: 12000, navigationTimeout: 30000 }
+        { settleTimeout: 2500, navigationTimeout: 30000 }
       ).catch((error) => {
         if (settled) {
           return;

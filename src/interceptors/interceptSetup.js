@@ -1,14 +1,26 @@
 import { createDetectorState, detectType, extractStreamFromPayload, isVideoContentType, isVideoUrl } from './index.js';
 
+const BLOCKED_RESOURCE_TYPES = new Set(['image', 'font', 'stylesheet']);
+const BLOCKED_URL_PATTERNS = [
+  'google-analytics.com',
+  'googletagmanager.com',
+  'doubleclick.net',
+  'umami.',
+  '/cdn-cgi/rum',
+  'mc.yandex.ru',
+  'f.clarity.ms'
+];
+
 export async function setupInterceptors(page, onFound) {
   const state = createDetectorState();
 
   await page.route('**/*', async (route) => {
     const request = route.request();
     const url = request.url();
+    const resourceType = request.resourceType();
 
-    if (['document', 'fetch', 'xhr', 'media'].includes(request.resourceType())) {
-      console.log(new Date().toISOString(), '[request]', request.resourceType(), url);
+    if (['document', 'fetch', 'xhr', 'media'].includes(resourceType)) {
+      console.log(new Date().toISOString(), '[request]', resourceType, url);
     }
 
     if (isVideoUrl(url, state)) {
@@ -19,6 +31,11 @@ export async function setupInterceptors(page, onFound) {
         foundAt: new Date().toISOString(),
         via: 'request'
       });
+    }
+
+    if (BLOCKED_RESOURCE_TYPES.has(resourceType) || BLOCKED_URL_PATTERNS.some((pattern) => url.includes(pattern))) {
+      await route.abort().catch(() => undefined);
+      return;
     }
 
     await route.continue();
