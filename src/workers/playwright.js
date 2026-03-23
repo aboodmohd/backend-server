@@ -5,6 +5,7 @@ const BLOCKED_RESOURCE_PATTERN = '**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf,css}
 
 export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   const browser = await chromium.launch({
+    channel: 'chromium',
     headless: options.headless ?? true,
     args: [
       '--no-sandbox',

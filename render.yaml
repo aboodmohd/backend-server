@@ -3,7 +3,7 @@ services:
     name: video-sniff
     runtime: node
     buildCommand: npm install && PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install chromium && PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install-deps chromium
-    startCommand: node src/index.js
+    startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
