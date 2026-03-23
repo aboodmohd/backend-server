@@ -5,7 +5,7 @@ import { extractVideoUrls } from '../workers/playwright.js';
 const router = Router();
 const cache = createCacheStore();
 const ONE_HOUR_MS = 60 * 60 * 1000;
-const RESOLVE_TIMEOUT_MS = Number(process.env.RESOLVE_TIMEOUT_MS || 12000);
+const RESOLVE_TIMEOUT_MS = Number(process.env.RESOLVE_TIMEOUT_MS || 30000);
 
 function normalizeHeaders(headers = {}) {
   return Object.entries(headers).reduce((acc, [key, value]) => {
@@ -63,7 +63,7 @@ router.post('/', async (req, res) => {
             qualities: []
           });
         },
-        { settleTimeout: 6000, navigationTimeout: 30000 }
+        { settleTimeout: 12000, navigationTimeout: 30000 }
       ).catch((error) => {
         if (settled) {
           return;

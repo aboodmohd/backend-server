@@ -11,3 +11,5 @@ services:
         value: 3000
       - key: PLAYWRIGHT_BROWSERS_PATH
         value: 0
+      - key: RESOLVE_TIMEOUT_MS
+        value: 30000
