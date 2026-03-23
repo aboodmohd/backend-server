@@ -85,6 +85,49 @@ function pickBestStream(candidates) {
   return uniqueCandidates[0] || null;
 }
 
+function normalizeContentType(value) {
+  return String(value || '').split(';')[0].trim().toLowerCase();
+}
+
+function getStreamPriority(candidate, contentType) {
+  const normalizedCandidate = String(candidate || '').toLowerCase();
+  const normalizedType = normalizeContentType(contentType);
+
+  if (normalizedCandidate.includes('.m3u8') || normalizedType.includes('mpegurl')) {
+    return 0;
+  }
+
+  if (normalizedCandidate.includes('.mpd') || normalizedType.includes('dash+xml')) {
+    return 1;
+  }
+
+  if (normalizedCandidate.includes('.mp4')) {
+    return 2;
+  }
+
+  if (normalizedCandidate.includes('.webm')) {
+    return 3;
+  }
+
+  if (normalizedCandidate.includes('.mkv')) {
+    return 4;
+  }
+
+  if (normalizedType.startsWith('video/')) {
+    return 5;
+  }
+
+  if (normalizedType === 'application/octet-stream' && /(?:video|stream|playlist|manifest|segment|chunk|media)/i.test(normalizedCandidate)) {
+    return 6;
+  }
+
+  if (isMediaUrl(candidate)) {
+    return 7;
+  }
+
+  return null;
+}
+
 function collectPlayerConfigCandidates(input, baseUrl) {
   const html = String(input || '');
   const streamCandidates = [];
@@ -1074,9 +1117,9 @@ async function browserFallback(url, source) {
     viewport: { width: 1366, height: 768 },
   });
   const page = await context.newPage();
+  await installVidfastResourceBlocking(page);
 
   if (source === 'vidfast') {
-    await installVidfastResourceBlocking(page);
     await installVidfastEnvironment(page);
     await installVidfastChunkPatches(page);
     await installVidfastCapture(page);
@@ -1087,19 +1130,36 @@ async function browserFallback(url, source) {
   const subtitles = [];
   const visitedUrls = new Set();
   const tracedNetworkUrls = new Set();
+  let bestStream = null;
+  let bestStreamPriority = Number.POSITIVE_INFINITY;
+  let resolveFastStream;
+  let fastStreamSettled = false;
+  let navigationError = null;
+  const fastStreamDetected = new Promise((resolve) => {
+    resolveFastStream = resolve;
+  });
   let resolveStreamDetected;
   const streamDetected = new Promise((resolve) => {
     resolveStreamDetected = resolve;
   });
 
   const signalStreamDetected = () => {
-    if (pickBestStream([...streamCandidates])) {
+    if (bestStream || pickBestStream([...streamCandidates])) {
       resolveStreamDetected();
     }
   };
 
+  const finalizeFastStream = () => {
+    if (fastStreamSettled || !bestStream) {
+      return;
+    }
+
+    fastStreamSettled = true;
+    resolveFastStream(bestStream);
+  };
+
   const waitForStream = async (timeoutMs) => {
-    if (pickBestStream([...streamCandidates])) {
+    if (bestStream || pickBestStream([...streamCandidates])) {
       return;
     }
 
@@ -1109,14 +1169,36 @@ async function browserFallback(url, source) {
     ]);
   };
 
+  const registerStreamCandidate = (candidate, requestHeaders = {}, contentType = '') => {
+    const priority = getStreamPriority(candidate, contentType);
+
+    if (priority === null) {
+      return false;
+    }
+
+    streamCandidates.add(candidate);
+
+    if (requestHeaders && Object.keys(requestHeaders).length > 0) {
+      mediaRequestHeaders.set(candidate, requestHeaders);
+    }
+
+    if (!bestStream || priority < bestStreamPriority) {
+      bestStream = candidate;
+      bestStreamPriority = priority;
+    }
+
+    signalStreamDetected();
+    finalizeFastStream();
+    return true;
+  };
+
   const captureUrl = (candidate) => {
     if (!candidate) {
       return;
     }
 
     if (isMediaUrl(candidate)) {
-      streamCandidates.add(candidate);
-      signalStreamDetected();
+      registerStreamCandidate(candidate);
     }
 
     if (isSubtitleUrl(candidate)) {
@@ -1165,17 +1247,18 @@ async function browserFallback(url, source) {
       return;
     }
 
-    mediaRequestHeaders.set(candidate, request.headers());
-    streamCandidates.add(candidate);
-    signalStreamDetected();
+    registerStreamCandidate(candidate, request.headers());
   };
 
   const captureResponse = async (response) => {
     const candidate = response.url();
-    captureUrl(candidate);
-
     const request = response.request();
+    const requestHeaders = request.headers();
     const resourceType = request.resourceType();
+    const contentType = response.headers()['content-type'] || '';
+
+    captureUrl(candidate);
+    registerStreamCandidate(candidate, requestHeaders, contentType);
 
     if (!shouldTraceNetworkCandidate(source, candidate, resourceType) || tracedNetworkUrls.has(`response:${candidate}`)) {
       return;
@@ -1183,7 +1266,6 @@ async function browserFallback(url, source) {
 
     tracedNetworkUrls.add(`response:${candidate}`);
 
-    const contentType = response.headers()['content-type'] || '';
     const details = {
       resourceType,
       status: response.status(),
@@ -1332,6 +1414,10 @@ async function browserFallback(url, source) {
   };
 
   const navigateRecursive = async (targetUrl, depth = 0) => {
+    if (bestStream) {
+      return;
+    }
+
     if (depth > 5 || visitedUrls.has(targetUrl)) {
       return;
     }
@@ -1345,11 +1431,10 @@ async function browserFallback(url, source) {
       const vidlinkApiResult = await tryVidlinkBrowserApi(page, targetUrl);
 
       if (vidlinkApiResult?.stream) {
-        streamCandidates.add(vidlinkApiResult.stream);
+        registerStreamCandidate(vidlinkApiResult.stream);
         for (const subtitle of vidlinkApiResult.subtitles || []) {
           subtitles.push(subtitle);
         }
-        signalStreamDetected();
         return;
       }
     }
@@ -1427,17 +1512,16 @@ async function browserFallback(url, source) {
 
       const htmlResult = scanPayloadForMedia(capture?.html || '', targetUrl);
       if (htmlResult?.stream) {
-        streamCandidates.add(htmlResult.stream);
+        registerStreamCandidate(htmlResult.stream);
         for (const subtitle of htmlResult.subtitles || []) {
           subtitles.push(subtitle);
         }
-        signalStreamDetected();
       }
 
       await waitForStream(4000);
     }
 
-    if (pickBestStream([...streamCandidates])) {
+    if (bestStream || pickBestStream([...streamCandidates])) {
       return;
     }
 
@@ -1454,19 +1538,34 @@ async function browserFallback(url, source) {
       logStep(source, 'browser following nested frame', { depth: depth + 1, url: nextUrl });
       await navigateRecursive(nextUrl, depth + 1);
 
-      if (pickBestStream([...streamCandidates])) {
+      if (bestStream || pickBestStream([...streamCandidates])) {
         return;
       }
     }
   };
 
   try {
-    await navigateRecursive(url);
-    await waitForStream(source === 'vidfast' ? 5000 : 2000);
+    const navigationTask = navigateRecursive(url).catch((error) => {
+      navigationError = error;
+    });
 
-    const stream = pickBestStream([...streamCandidates]);
+    const fallbackTimeoutMs = source === 'vidfast' ? 12000 : 8000;
+
+    await Promise.race([
+      fastStreamDetected,
+      navigationTask.then(() => waitForStream(source === 'vidfast' ? 3000 : 1500)),
+      new Promise((resolve) => setTimeout(resolve, fallbackTimeoutMs)),
+    ]);
+
+    const stream = bestStream || pickBestStream([...streamCandidates]);
 
     if (!stream) {
+      await navigationTask;
+
+      if (navigationError) {
+        throw navigationError;
+      }
+
       throw createError(504, 'BROWSER_NO_STREAM', 'Browser fallback did not detect a valid media stream');
     }
 

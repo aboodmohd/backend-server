@@ -4,7 +4,7 @@
   "main": "server.js",
   "scripts": {
     "postinstall": "playwright install chromium",
-    "start": "npx playwright install chromium && node server.js",
+    "start": "node server.js",
     "dev": "node --watch server.js"
   },
   "dependencies": {
