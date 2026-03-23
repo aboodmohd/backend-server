@@ -26,6 +26,22 @@ function isExpectedCloseError(error) {
   return message.includes('target page, context or browser has been closed');
 }
 
+function shouldTrackActivity(url, resourceType) {
+  if (!['document', 'fetch', 'xhr', 'media'].includes(resourceType)) {
+    return false;
+  }
+
+  return ![
+    'google-analytics.com',
+    'googletagmanager.com',
+    'doubleclick.net',
+    'umami.',
+    '/cdn-cgi/rum',
+    'mc.yandex.ru',
+    'f.clarity.ms'
+  ].some((pattern) => url.includes(pattern));
+}
+
 export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   console.log(new Date().toISOString(), '[extractor] starting', targetUrl);
   const browser = await getBrowser(options);
@@ -40,6 +56,7 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 
   const page = await context.newPage();
   let firstResultResolved = false;
+  let lastRelevantActivityAt = Date.now();
 
   const stopIfResolved = () => firstResultResolved || page.isClosed();
 
@@ -56,6 +73,35 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       }
     }
   };
+
+  const markActivity = (url, resourceType) => {
+    if (shouldTrackActivity(url, resourceType)) {
+      lastRelevantActivityAt = Date.now();
+    }
+  };
+
+  const waitForNetworkSettle = async (quietWindowMs, maxWaitMs) => {
+    const startedAt = Date.now();
+
+    while (!stopIfResolved()) {
+      const quietForMs = Date.now() - lastRelevantActivityAt;
+      const elapsedMs = Date.now() - startedAt;
+
+      if (quietForMs >= quietWindowMs || elapsedMs >= maxWaitMs) {
+        return;
+      }
+
+      await safeWait(Math.min(250, quietWindowMs));
+    }
+  };
+
+  page.on('request', (request) => {
+    markActivity(request.url(), request.resourceType());
+  });
+
+  page.on('response', (response) => {
+    markActivity(response.url(), response.request().resourceType());
+  });
 
   await setupInterceptors(page, async (result) => {
     onFound(result);
@@ -94,7 +140,7 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     }
 
     await page.evaluate(() => window.scrollBy(0, 500)).catch(() => undefined);
-    await safeWait(options.settleTimeout ?? 2500);
+    await waitForNetworkSettle(options.settleTimeout ?? 2500, options.maxWaitAfterLoad ?? 8000);
   } catch (error) {
     if (isExpectedCloseError(error)) {
       return;
