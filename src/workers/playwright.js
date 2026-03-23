@@ -1,5 +1,6 @@
 import { chromium } from 'playwright';
 import { setupInterceptors } from '../interceptors/interceptSetup.js';
+import { detectType, extractStreamFromPayload } from '../interceptors/index.js';
 
 let browserPromise;
 
@@ -111,6 +112,108 @@ async function pokePlayers(page, targetUrl) {
   }
 }
 
+async function installVidfastHooks(page, targetUrl) {
+  if (!isVidfastUrl(targetUrl)) {
+    return;
+  }
+
+  await page.addInitScript(() => {
+    const store = {
+      payloads: []
+    };
+
+    const pushPayload = (entry) => {
+      try {
+        if (!entry || !entry.body) {
+          return;
+        }
+
+        store.payloads.push({
+          url: String(entry.url || ''),
+          body: String(entry.body || '').slice(0, 200000)
+        });
+      } catch {}
+    };
+
+    Object.defineProperty(window, '__VIDFAST_CAPTURE__', {
+      value: store,
+      configurable: true
+    });
+
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      const response = await originalFetch(...args);
+      try {
+        const requestUrl = typeof args[0] === 'string' ? args[0] : args[0]?.url;
+        const cloned = response.clone();
+        const body = await cloned.text();
+        pushPayload({ url: requestUrl || response.url, body });
+      } catch {}
+      return response;
+    };
+
+    const originalOpen = XMLHttpRequest.prototype.open;
+    const originalSend = XMLHttpRequest.prototype.send;
+
+    XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+      this.__captureUrl = url;
+      return originalOpen.call(this, method, url, ...rest);
+    };
+
+    XMLHttpRequest.prototype.send = function(...args) {
+      this.addEventListener('loadend', () => {
+        try {
+          pushPayload({ url: this.__captureUrl || this.responseURL, body: this.responseText || '' });
+        } catch {}
+      });
+      return originalSend.apply(this, args);
+    };
+
+    let currentExecutor;
+    Object.defineProperty(globalThis, '_0x239534', {
+      configurable: true,
+      get() {
+        return currentExecutor;
+      },
+      set(fn) {
+        if (typeof fn !== 'function') {
+          currentExecutor = fn;
+          return;
+        }
+
+        currentExecutor = function wrappedExecutor(ctx, ...args) {
+          try {
+            if (ctx?.rs) {
+              pushPayload({ url: 'executor://_0x239534', body: String(ctx.rs) });
+            }
+          } catch {}
+
+          return fn.call(this, ctx, ...args);
+        };
+      }
+    });
+  });
+}
+
+async function inspectVidfastPayloads(page) {
+  const payloads = await page.evaluate(() => window.__VIDFAST_CAPTURE__?.payloads || []).catch(() => []);
+
+  for (const entry of payloads) {
+    const streamUrl = extractStreamFromPayload(entry?.body || '');
+    if (streamUrl) {
+      return {
+        url: streamUrl,
+        type: detectType(streamUrl),
+        headers: {},
+        foundAt: new Date().toISOString(),
+        via: 'payload'
+      };
+    }
+  }
+
+  return null;
+}
+
 export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   console.log(new Date().toISOString(), '[extractor] starting', targetUrl);
   const browser = await getBrowser(options);
@@ -172,6 +275,8 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     markActivity(response.url(), response.request().resourceType());
   });
 
+  await installVidfastHooks(page, targetUrl);
+
   await setupInterceptors(page, async (result) => {
     onFound(result);
 
@@ -208,6 +313,15 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       options.maxWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 14000 : 10000),
       options.minWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 7000 : 5000)
     );
+
+    if (!stopIfResolved() && isVidfastUrl(targetUrl)) {
+      const vidfastResult = await inspectVidfastPayloads(page);
+      if (vidfastResult) {
+        onFound(vidfastResult);
+        firstResultResolved = true;
+        await page.close().catch(() => undefined);
+      }
+    }
   } catch (error) {
     if (isExpectedCloseError(error)) {
       return;
