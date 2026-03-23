@@ -1,6 +1,9 @@
-import { chromium } from 'playwright';
+import { chromium } from 'playwright-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { setupInterceptors } from '../interceptors/interceptSetup.js';
 import { detectType, extractStreamFromPayload } from '../interceptors/index.js';
+
+chromium.use(StealthPlugin());
 
 let browserPromise;
 
@@ -45,6 +48,21 @@ function shouldTrackActivity(url, resourceType) {
 
 function isVidfastUrl(url) {
   return String(url || '').includes('vidfast.pro');
+}
+
+async function logVidfastPageState(page, targetUrl) {
+  if (!isVidfastUrl(targetUrl)) {
+    return;
+  }
+
+  try {
+    const title = await page.title();
+    const bodySnippet = await page.evaluate(() => document.body?.innerText?.slice(0, 300) || '');
+    console.log(new Date().toISOString(), '[vidfast] page title', title);
+    console.log(new Date().toISOString(), '[vidfast] page body', bodySnippet.replace(/\s+/g, ' ').trim());
+  } catch (error) {
+    console.log(new Date().toISOString(), '[vidfast] page state log failed', error?.message || String(error));
+  }
 }
 
 async function clickFirstVisible(frame, selectors) {
@@ -303,6 +321,8 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     });
 
     console.log(new Date().toISOString(), '[extractor] page loaded', targetUrl);
+
+    await logVidfastPageState(page, targetUrl);
 
     await safeWait(isVidfastUrl(targetUrl) ? 2000 : 250);
 
