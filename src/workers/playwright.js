@@ -65,6 +65,23 @@ async function logVidfastPageState(page, targetUrl) {
   }
 }
 
+async function warmVidfastSession(page, targetUrl) {
+  if (!isVidfastUrl(targetUrl)) {
+    return;
+  }
+
+  try {
+    await page.goto('https://vidfast.pro', {
+      waitUntil: 'domcontentloaded',
+      timeout: 20000
+    });
+    console.log(new Date().toISOString(), '[vidfast] warmup visited homepage');
+    await page.waitForTimeout(2000);
+  } catch (error) {
+    console.log(new Date().toISOString(), '[vidfast] warmup failed', error?.message || String(error));
+  }
+}
+
 async function clickFirstVisible(frame, selectors) {
   for (const selector of selectors) {
     try {
@@ -296,6 +313,30 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     markActivity(response.url(), response.request().resourceType());
   });
 
+  page.on('response', async (response) => {
+    if (!isVidfastUrl(targetUrl)) {
+      return;
+    }
+
+    const resourceType = response.request().resourceType();
+    if (!['xhr', 'fetch'].includes(resourceType)) {
+      return;
+    }
+
+    const url = response.url();
+    const status = response.status();
+    console.log(new Date().toISOString(), '[vidfast:xhr]', status, url);
+
+    if (!url.includes('vidfast') && !url.includes('api')) {
+      return;
+    }
+
+    try {
+      const body = await response.text();
+      console.log(new Date().toISOString(), '[vidfast:xhr-body]', body.slice(0, 500));
+    } catch {}
+  });
+
   page.on('framenavigated', (frame) => {
     const frameUrl = frame.url();
     if (frameUrl && frameUrl !== 'about:blank' && frame !== page.mainFrame()) {
@@ -315,6 +356,8 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   });
 
   try {
+    await warmVidfastSession(page, targetUrl);
+
     await page.goto(targetUrl, {
       waitUntil: 'domcontentloaded',
       timeout: options.navigationTimeout ?? 30000
