@@ -80,14 +80,14 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     }
   };
 
-  const waitForNetworkSettle = async (quietWindowMs, maxWaitMs) => {
+  const waitForNetworkSettle = async (quietWindowMs, maxWaitMs, minWaitMs = 0) => {
     const startedAt = Date.now();
 
     while (!stopIfResolved()) {
       const quietForMs = Date.now() - lastRelevantActivityAt;
       const elapsedMs = Date.now() - startedAt;
 
-      if (quietForMs >= quietWindowMs || elapsedMs >= maxWaitMs) {
+      if ((elapsedMs >= minWaitMs && quietForMs >= quietWindowMs) || elapsedMs >= maxWaitMs) {
         return;
       }
 
@@ -140,7 +140,11 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     }
 
     await page.evaluate(() => window.scrollBy(0, 500)).catch(() => undefined);
-    await waitForNetworkSettle(options.settleTimeout ?? 2500, options.maxWaitAfterLoad ?? 8000);
+    await waitForNetworkSettle(
+      options.settleTimeout ?? 2000,
+      options.maxWaitAfterLoad ?? 10000,
+      options.minWaitAfterLoad ?? 5000
+    );
   } catch (error) {
     if (isExpectedCloseError(error)) {
       return;
