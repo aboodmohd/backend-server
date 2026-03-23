@@ -1,0 +1,22 @@
+{
+  "name": "video-sniff",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "nodemon src/index.js",
+    "start": "node src/index.js",
+    "postinstall": "PLAYWRIGHT_BROWSERS_PATH=0 playwright install chromium"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "p-queue": "^8.1.0",
+    "playwright": "^1.55.1",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  }
+}
