@@ -51,6 +51,35 @@ function isVidfastUrl(url) {
   return String(url || '').includes('vidfast.pro');
 }
 
+function isVideasyUrl(url) {
+  return /player\.videasy\.net/i.test(String(url || ''));
+}
+
+function shouldProxyVideasyApi(targetUrl, request) {
+  if (!isVideasyUrl(targetUrl) || request.resourceType() !== 'fetch') {
+    return false;
+  }
+
+  return /https:\/\/api\d?\.videasy\.net\/.+\/sources-with-title\?/i.test(request.url());
+}
+
+function shouldBlockVideasyScript(targetUrl, request) {
+  if (!isVideasyUrl(targetUrl) || request.resourceType() !== 'script') {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(request.url());
+    if (parsed.hostname !== 'player.videasy.net') {
+      return true;
+    }
+
+    return parsed.pathname === '/scripts/gk.js';
+  } catch {
+    return false;
+  }
+}
+
 function shouldBlockVidfastNavigation(targetUrl, request) {
   if (!isVidfastUrl(targetUrl)) {
     return false;
@@ -127,6 +156,30 @@ async function maybePatchVidfastScript(route, targetUrl) {
   return true;
 }
 
+async function maybeProxyVideasyApi(route, targetUrl) {
+  if (!shouldProxyVideasyApi(targetUrl, route.request())) {
+    return false;
+  }
+
+  const response = await route.fetch();
+  const body = await response.text();
+  console.log(new Date().toISOString(), '[videasy] proxied api', route.request().url());
+
+  await route.fulfill({
+    response,
+    body,
+    headers: {
+      ...response.headers(),
+      'access-control-allow-origin': 'https://player.videasy.net',
+      'access-control-allow-methods': 'GET,HEAD,OPTIONS',
+      'access-control-allow-headers': '*',
+      vary: 'Origin'
+    }
+  });
+
+  return true;
+}
+
 export async function setupInterceptors(page, targetUrl, onFound) {
   const state = createDetectorState();
   const context = page.context();
@@ -153,7 +206,17 @@ export async function setupInterceptors(page, targetUrl, onFound) {
       return;
     }
 
+    if (shouldBlockVideasyScript(targetUrl, request)) {
+      console.log(new Date().toISOString(), '[videasy] blocked script', url);
+      await route.abort().catch(() => undefined);
+      return;
+    }
+
     if (await maybePatchVidfastScript(route, targetUrl).catch(() => false)) {
+      return;
+    }
+
+    if (await maybeProxyVideasyApi(route, targetUrl).catch(() => false)) {
       return;
     }
 
