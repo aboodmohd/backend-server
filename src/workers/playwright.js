@@ -225,7 +225,9 @@ async function installVidfastHooks(page, targetUrl) {
   await page.addInitScript(() => {
     const store = {
       payloads: [],
-      mediaUrls: []
+      mediaUrls: [],
+      errors: [],
+      scriptUrls: []
     };
 
     const pushPayload = (entry) => {
@@ -256,12 +258,60 @@ async function installVidfastHooks(page, targetUrl) {
       } catch {}
     };
 
+    const pushError = (value, source = 'unknown') => {
+      try {
+        const message = String(value || '').trim();
+        if (!message) {
+          return;
+        }
+
+        store.errors.push({
+          message: message.slice(0, 200000),
+          source,
+          at: Date.now()
+        });
+      } catch {}
+    };
+
+    const pushScriptUrl = (value, source = 'script') => {
+      try {
+        const url = String(value || '').trim();
+        if (!url) {
+          return;
+        }
+
+        store.scriptUrls.push({
+          url: url.slice(0, 200000),
+          source,
+          at: Date.now()
+        });
+      } catch {}
+    };
+
     Object.defineProperty(window, '__VIDFAST_CAPTURE__', {
       value: store,
       configurable: true
     });
 
     window.open = () => null;
+
+    window.addEventListener('error', (event) => {
+      pushError(event?.message || event?.error?.stack || event?.filename, 'window-error');
+      pushScriptUrl(event?.filename, 'window-error');
+    });
+
+    window.addEventListener('unhandledrejection', (event) => {
+      pushError(event?.reason?.stack || event?.reason?.message || event?.reason, 'unhandledrejection');
+    });
+
+    const originalAppendChild = Element.prototype.appendChild;
+    Element.prototype.appendChild = function(child) {
+      if (child instanceof HTMLScriptElement) {
+        pushScriptUrl(child.src || child.textContent?.slice(0, 200), 'append-child-script');
+      }
+
+      return originalAppendChild.call(this, child);
+    };
 
     const mediaSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
     if (mediaSrcDescriptor?.set) {
@@ -397,6 +447,8 @@ async function inspectVidfastRuntime(page) {
     return {
       mediaUrls: window.__VIDFAST_CAPTURE__?.mediaUrls || [],
       payloads: window.__VIDFAST_CAPTURE__?.payloads || [],
+      errors: window.__VIDFAST_CAPTURE__?.errors || [],
+      scriptUrls: window.__VIDFAST_CAPTURE__?.scriptUrls || [],
       video: video
         ? {
             src: video.getAttribute('src') || '',
@@ -457,10 +509,16 @@ async function inspectVidfastRuntime(page) {
     JSON.stringify({
       video: runtimeState.video,
       mediaUrls: runtimeState.mediaUrls?.length || 0,
+      errors: runtimeState.errors?.length || 0,
       resources: runtimeState.resources?.length || 0,
+      scriptUrls: runtimeState.scriptUrls?.length || 0,
       storageValues: runtimeState.storageValues?.length || 0
     })
   );
+
+  if (runtimeState.errors?.length) {
+    console.log(new Date().toISOString(), '[vidfast] runtime errors', JSON.stringify(runtimeState.errors.slice(0, 10)));
+  }
 
   return null;
 }
@@ -551,8 +609,32 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     } catch {}
   });
 
+  page.on('requestfailed', (request) => {
+    if (!isVidfastUrl(targetUrl)) {
+      return;
+    }
+
+    if (!['script', 'document', 'fetch', 'xhr'].includes(request.resourceType())) {
+      return;
+    }
+
+    console.log(new Date().toISOString(), '[requestfailed]', request.resourceType(), request.url(), request.failure()?.errorText || 'unknown');
+  });
+
+  page.on('response', (response) => {
+    if (!isVidfastUrl(targetUrl)) {
+      return;
+    }
+
+    if (response.request().resourceType() !== 'script') {
+      return;
+    }
+
+    console.log(new Date().toISOString(), '[script]', response.status(), response.url());
+  });
+
   page.on('pageerror', (error) => {
-    console.log(new Date().toISOString(), '[pageerror]', error?.message || String(error));
+    console.log(new Date().toISOString(), '[pageerror]', error?.stack || error?.message || String(error));
   });
 
   page.on('console', (msg) => {
