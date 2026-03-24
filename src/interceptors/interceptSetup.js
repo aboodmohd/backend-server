@@ -11,6 +11,42 @@ const BLOCKED_URL_PATTERNS = [
   'f.clarity.ms'
 ];
 
+const VIDFAST_RUNTIME_PATCHES = [
+  {
+    name: 'expose-ap',
+    find: 'function ap(t,e){return ac[c4(2928)](this,7,Array[c9(2929,"wetx")](arguments),{[c4(2249)]:void 0,[c9(2096,"xw3W")]:Object[c4(1996)]({},{[c4(501)]:{get:function(){return aL},set:function(t){aL=t},enumerable:!0},[at(1344,"#DY9")]:{get:function(){return ag},set:function(t){ag=t},enumerable:!0},[c2(2733)]:{get:function(){return aP},set:function(t){aP=t},enumerable:!0},[c5(1783)]:{get:function(){return aS},set:function(t){aS=t},enumerable:!0}})},void 0,new.target)}',
+    replace:
+      'function ap(t,e){return window.__VIDFAST_AP__=ap,ac[c4(2928)](this,7,Array[c9(2929,"wetx")](arguments),{[c4(2249)]:void 0,[c9(2096,"xw3W")]:Object[c4(1996)]({},{[c4(501)]:{get:function(){return aL},set:function(t){aL=t},enumerable:!0},[at(1344,"#DY9")]:{get:function(){return ag},set:function(t){ag=t},enumerable:!0},[c2(2733)]:{get:function(){return aP},set:function(t){aP=t},enumerable:!0},[c5(1783)]:{get:function(){return aS},set:function(t){aS=t},enumerable:!0}})},void 0,new.target)}'
+  },
+  {
+    name: 'expose-runtime-call',
+    find: 'window[at(2444,"5(XA")](c3(2853),o),ap({crypto:cE,encode:c$,en:e_,server:oW,setServers:Wa,setState:oh,setFavServer:Wm,',
+    replace:
+      'window[at(2444,"5(XA")](c3(2853),o),window.__VIDFAST_RUNTIME__={ap,crypto:cE,encode:c$,en:e_,server:oW,setServers:Wa,setState:oh,setFavServer:Wm},ap({crypto:cE,encode:c$,en:e_,server:oW,setServers:Wa,setState:oh,setFavServer:Wm,'
+  },
+  {
+    name: 'bypass-a8-gate',
+    find: 'if(!a8())return;!0===window[c3(2817)]&&Wp(!0);',
+    replace: 'window.__VIDFAST_BYPASS__=!0;!0===window[c3(2817)]&&Wp(!0);'
+  },
+  {
+    name: 'wrap-success-state',
+    find: 'window[at(1292,eB)][at(1038,"*Zm6")]({event:at(1982,"b8d1"),data:n[at(1755,"5(XA")]},"*"),oh(2),e4&&!WQ[c2(2316)]&&fetch(',
+    replace:
+      'window[at(1292,eB)][at(1038,"*Zm6")]({event:at(1982,"b8d1"),data:n[at(1755,"5(XA")]},"*"),oh(2),window.__VIDFAST_RUNTIME__&&(window.__VIDFAST_RUNTIME__.state=2),e4&&!WQ[c2(2316)]&&fetch('
+  },
+  {
+    name: 'wrap-loading-state',
+    find: 'let W4=()=>{var t;oh(1),oS(!0),',
+    replace: 'let W4=()=>{var t;oh(1),window.__VIDFAST_RUNTIME__&&(window.__VIDFAST_RUNTIME__.state=1),oS(!0),'
+  },
+  {
+    name: 'wrap-reset-state',
+    find: 'oS(!1),oh(0),e6){',
+    replace: 'oS(!1),oh(0),window.__VIDFAST_RUNTIME__&&(window.__VIDFAST_RUNTIME__.state=0),e6){'
+  }
+];
+
 function isVidfastUrl(url) {
   return String(url || '').includes('vidfast.pro');
 }
@@ -45,6 +81,52 @@ function shouldBlockVidfastScript(targetUrl, request) {
   }
 }
 
+function shouldPatchVidfastScript(targetUrl, request) {
+  if (!isVidfastUrl(targetUrl) || request.resourceType() !== 'script') {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(request.url());
+    return parsed.hostname === 'vidfast.pro' && parsed.pathname.includes('/_next/static/chunks/');
+  } catch {
+    return false;
+  }
+}
+
+async function maybePatchVidfastScript(route, targetUrl) {
+  if (!shouldPatchVidfastScript(targetUrl, route.request())) {
+    return false;
+  }
+
+  const response = await route.fetch();
+  let body = await response.text();
+  const appliedPatches = [];
+
+  for (const patch of VIDFAST_RUNTIME_PATCHES) {
+    if (body.includes(patch.find)) {
+      body = body.replace(patch.find, patch.replace);
+      appliedPatches.push(patch.name);
+    }
+  }
+
+  if (!appliedPatches.length) {
+    await route.fulfill({ response, body });
+    return true;
+  }
+
+  console.log(new Date().toISOString(), '[vidfast] patched runtime chunk', route.request().url(), appliedPatches.join(','));
+  await route.fulfill({
+    response,
+    body,
+    headers: {
+      ...response.headers(),
+      'content-type': 'application/javascript; charset=utf-8'
+    }
+  });
+  return true;
+}
+
 export async function setupInterceptors(page, targetUrl, onFound) {
   const state = createDetectorState();
   const context = page.context();
@@ -68,6 +150,10 @@ export async function setupInterceptors(page, targetUrl, onFound) {
     if (shouldBlockVidfastScript(targetUrl, request)) {
       console.log(new Date().toISOString(), '[vidfast] blocked script', url);
       await route.abort().catch(() => undefined);
+      return;
+    }
+
+    if (await maybePatchVidfastScript(route, targetUrl).catch(() => false)) {
       return;
     }
 

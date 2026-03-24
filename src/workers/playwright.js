@@ -523,6 +523,119 @@ async function inspectVidfastRuntime(page) {
   return null;
 }
 
+async function triggerVidfastBootstrap(page, targetUrl) {
+  if (!isVidfastUrl(targetUrl)) {
+    return;
+  }
+
+  const result = await page.evaluate(async () => {
+    const runtime = window.__VIDFAST_RUNTIME__ || {};
+    const runtimeAp = runtime.ap || window.__VIDFAST_AP__;
+
+    const html = document.documentElement?.innerHTML || '';
+    const tokenMatch = html.match(/en:\"([^\"]+)\"/) || html.match(/en:"([^"]+)"/);
+    const serverMatch = html.match(/server:\"([^\"]*)\"/) || html.match(/server:"([^"]*)"/);
+
+    runtime.en ||= tokenMatch?.[1] || '';
+    runtime.server ||= serverMatch?.[1] || '';
+
+    if (!runtimeAp || typeof runtime.setState !== 'function' || typeof runtime.setServers !== 'function') {
+      return {
+        ok: false,
+        reason: 'runtime-missing',
+        hasAp: Boolean(runtimeAp),
+        hasSetState: typeof runtime.setState === 'function',
+        hasSetServers: typeof runtime.setServers === 'function',
+        hasEn: Boolean(runtime.en),
+        hasServer: typeof runtime.server === 'string'
+      };
+    }
+
+    try {
+      const savedServer = runtime.server || localStorage.getItem('server') || localStorage.getItem('preferredServer') || '';
+      if (savedServer) {
+        localStorage.setItem('server', savedServer);
+        localStorage.setItem('preferredServer', savedServer);
+        localStorage.setItem('player:server', savedServer);
+      }
+    } catch {}
+
+    try {
+      await runtimeAp({
+        crypto: runtime.crypto,
+        encode: runtime.encode,
+        en: runtime.en,
+        server: runtime.server,
+        setServers: runtime.setServers,
+        setState: runtime.setState,
+        setFavServer: runtime.setFavServer,
+        window,
+        document,
+        navigator,
+        localStorage,
+        console,
+        JSON,
+        Math,
+        Date,
+        RegExp,
+        Map,
+        Set,
+        WeakMap,
+        WeakSet,
+        Array,
+        Object,
+        Number,
+        String,
+        Boolean,
+        Symbol,
+        Function,
+        screen,
+        Error,
+        TypeError,
+        RangeError,
+        SyntaxError,
+        parseInt,
+        parseFloat,
+        isNaN,
+        isFinite,
+        encodeURIComponent,
+        decodeURIComponent,
+        NaN,
+        Infinity,
+        undefined,
+        Promise,
+        Proxy,
+        Reflect,
+        Uint8Array,
+        Int8Array,
+        Uint16Array,
+        Int16Array,
+        Uint32Array,
+        Int32Array,
+        Float32Array,
+        Float64Array,
+        BigInt,
+        fetch,
+        TextEncoder,
+        TextDecoder,
+        URL,
+        URLSearchParams,
+        AbortSignal,
+        AbortController,
+        Buffer: globalThis.Buffer,
+        atob,
+        btoa
+      });
+
+      return { ok: true, state: runtime.state || null };
+    } catch (error) {
+      return { ok: false, reason: error?.stack || error?.message || String(error) };
+    }
+  }).catch((error) => ({ ok: false, reason: error?.message || String(error) }));
+
+  console.log(new Date().toISOString(), '[vidfast] manual bootstrap', JSON.stringify(result));
+}
+
 export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   console.log(new Date().toISOString(), '[extractor] starting', targetUrl);
   const browser = await getBrowser(options);
@@ -710,6 +823,12 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       options.maxWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 28000 : 10000),
       options.minWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 12000 : 5000)
     );
+
+    if (!stopIfResolved() && isVidfastUrl(targetUrl)) {
+      await triggerVidfastBootstrap(page, targetUrl);
+      await safeWait(3000);
+      await waitForNetworkSettle(3000, 12000, 3000);
+    }
 
     if (!stopIfResolved() && isVidfastUrl(targetUrl)) {
       const vidfastResult = await inspectVidfastPayloads(page);
