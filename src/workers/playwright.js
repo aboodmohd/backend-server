@@ -7,6 +7,23 @@ chromium.use(StealthPlugin());
 
 let browserPromise;
 
+const STREAM_URL_PATTERNS = [
+  /\.m3u8(\?|$)/i,
+  /\.mpd(\?|$)/i,
+  /\.mp4(\?|$)/i,
+  /\.webm(\?|$)/i,
+  /\.mkv(\?|$)/i,
+  /\.mov(\?|$)/i,
+  /\/hls\//i,
+  /\/dash\//i,
+  /\/stream\//i,
+  /manifest/i,
+  /playlist\.m3u8/i,
+  /master\.m3u8/i,
+  /index\.m3u8/i,
+  /video\.m3u8/i
+];
+
 function getBrowser(options = {}) {
   if (!browserPromise) {
     browserPromise = chromium.launch({
@@ -48,6 +65,26 @@ function shouldTrackActivity(url, resourceType) {
 
 function isVidfastUrl(url) {
   return String(url || '').includes('vidfast.pro');
+}
+
+function isLikelyStreamUrl(url) {
+  const value = String(url || '');
+  return STREAM_URL_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+function pickStreamCandidate(candidates = []) {
+  for (const candidate of candidates) {
+    const value = String(candidate || '')
+      .replace(/\\u0026/g, '&')
+      .replace(/\\\//g, '/')
+      .replace(/\\"/g, '"');
+
+    if (isLikelyStreamUrl(value)) {
+      return value;
+    }
+  }
+
+  return null;
 }
 
 async function logVidfastPageState(page, targetUrl) {
@@ -187,7 +224,8 @@ async function installVidfastHooks(page, targetUrl) {
 
   await page.addInitScript(() => {
     const store = {
-      payloads: []
+      payloads: [],
+      mediaUrls: []
     };
 
     const pushPayload = (entry) => {
@@ -203,10 +241,58 @@ async function installVidfastHooks(page, targetUrl) {
       } catch {}
     };
 
+    const pushMediaUrl = (value, source = 'unknown') => {
+      try {
+        const url = String(value || '').trim();
+        if (!url) {
+          return;
+        }
+
+        store.mediaUrls.push({
+          url: url.slice(0, 200000),
+          source,
+          at: Date.now()
+        });
+      } catch {}
+    };
+
     Object.defineProperty(window, '__VIDFAST_CAPTURE__', {
       value: store,
       configurable: true
     });
+
+    window.open = () => null;
+
+    const mediaSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+    if (mediaSrcDescriptor?.set) {
+      Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+        configurable: true,
+        enumerable: mediaSrcDescriptor.enumerable ?? true,
+        get() {
+          return mediaSrcDescriptor.get?.call(this);
+        },
+        set(value) {
+          pushMediaUrl(value, 'media-src');
+          return mediaSrcDescriptor.set.call(this, value);
+        }
+      });
+    }
+
+    const originalSetAttribute = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function(name, value) {
+      if (this instanceof HTMLMediaElement && String(name || '').toLowerCase() === 'src') {
+        pushMediaUrl(value, 'set-attribute');
+      }
+
+      return originalSetAttribute.call(this, name, value);
+    };
+
+    const originalCreateObjectURL = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = function(object) {
+      const objectUrl = originalCreateObjectURL(object);
+      pushMediaUrl(objectUrl, object?.constructor?.name || 'object-url');
+      return objectUrl;
+    };
 
     const originalFetch = window.fetch.bind(window);
     window.fetch = async (...args) => {
@@ -281,6 +367,100 @@ async function inspectVidfastPayloads(page) {
       };
     }
   }
+
+  return null;
+}
+
+async function inspectVidfastRuntime(page) {
+  const runtimeState = await page.evaluate(() => {
+    const video = document.querySelector('video');
+    const resourceEntries = performance
+      .getEntriesByType('resource')
+      .map((entry) => ({ name: entry.name, initiatorType: entry.initiatorType || '' }));
+
+    const storageValues = [];
+    const collectStorage = (storage) => {
+      try {
+        for (let index = 0; index < storage.length; index += 1) {
+          const key = storage.key(index);
+          const value = key ? storage.getItem(key) : '';
+          if (value) {
+            storageValues.push(value.slice(0, 200000));
+          }
+        }
+      } catch {}
+    };
+
+    collectStorage(window.localStorage);
+    collectStorage(window.sessionStorage);
+
+    return {
+      mediaUrls: window.__VIDFAST_CAPTURE__?.mediaUrls || [],
+      payloads: window.__VIDFAST_CAPTURE__?.payloads || [],
+      video: video
+        ? {
+            src: video.getAttribute('src') || '',
+            currentSrc: video.currentSrc || '',
+            poster: video.getAttribute('poster') || '',
+            readyState: video.readyState,
+            networkState: video.networkState
+          }
+        : null,
+      resources: resourceEntries,
+      storageValues,
+      html: document.documentElement?.outerHTML?.slice(0, 250000) || ''
+    };
+  }).catch(() => null);
+
+  if (!runtimeState) {
+    return null;
+  }
+
+  const directCandidate = pickStreamCandidate([
+    runtimeState.video?.currentSrc,
+    runtimeState.video?.src,
+    ...(runtimeState.mediaUrls || []).map((entry) => entry?.url),
+    ...(runtimeState.resources || []).map((entry) => entry?.name)
+  ]);
+
+  if (directCandidate) {
+    console.log(new Date().toISOString(), '[vidfast] extracted runtime stream candidate', directCandidate);
+    return {
+      url: directCandidate,
+      type: detectType(directCandidate),
+      headers: {},
+      foundAt: new Date().toISOString(),
+      via: 'runtime'
+    };
+  }
+
+  const payloadCandidate = pickStreamCandidate([
+    ...((runtimeState.payloads || []).map((entry) => entry?.body)),
+    ...(runtimeState.storageValues || []),
+    runtimeState.html
+  ].map((value) => extractStreamFromPayload(value)).filter(Boolean));
+
+  if (payloadCandidate) {
+    console.log(new Date().toISOString(), '[vidfast] extracted runtime payload candidate', payloadCandidate);
+    return {
+      url: payloadCandidate,
+      type: detectType(payloadCandidate),
+      headers: {},
+      foundAt: new Date().toISOString(),
+      via: 'runtime-payload'
+    };
+  }
+
+  console.log(
+    new Date().toISOString(),
+    '[vidfast] runtime inspection',
+    JSON.stringify({
+      video: runtimeState.video,
+      mediaUrls: runtimeState.mediaUrls?.length || 0,
+      resources: runtimeState.resources?.length || 0,
+      storageValues: runtimeState.storageValues?.length || 0
+    })
+  );
 
   return null;
 }
@@ -390,7 +570,7 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 
   await installVidfastHooks(page, targetUrl);
 
-  await setupInterceptors(page, async (result) => {
+  await setupInterceptors(page, targetUrl, async (result) => {
     onFound(result);
 
     if (!firstResultResolved) {
@@ -453,6 +633,14 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       const vidfastResult = await inspectVidfastPayloads(page);
       if (vidfastResult) {
         onFound(vidfastResult);
+        firstResultResolved = true;
+        await page.close().catch(() => undefined);
+        return;
+      }
+
+      const runtimeResult = await inspectVidfastRuntime(page);
+      if (runtimeResult) {
+        onFound(runtimeResult);
         firstResultResolved = true;
         await page.close().catch(() => undefined);
       }

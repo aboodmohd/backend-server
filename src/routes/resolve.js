@@ -43,7 +43,7 @@ router.post('/', async (req, res) => {
         if (settled) return;
         settled = true;
         reject(new Error('STREAM_NOT_FOUND'));
-      }, isVidfastUrl(url) ? 45000 : RESOLVE_TIMEOUT_MS);
+      }, isVidfastUrl(url) ? 75000 : RESOLVE_TIMEOUT_MS);
 
       extractVideoUrls(
         url,
@@ -68,7 +68,7 @@ router.post('/', async (req, res) => {
           });
         },
         isVidfastUrl(url)
-          ? { settleTimeout: 4000, navigationTimeout: 45000, minWaitAfterLoad: 12000, maxWaitAfterLoad: 28000 }
+          ? { settleTimeout: 5000, navigationTimeout: 45000, minWaitAfterLoad: 18000, maxWaitAfterLoad: 45000 }
           : { settleTimeout: 2000, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 10000 }
       ).catch((error) => {
         if (settled) {

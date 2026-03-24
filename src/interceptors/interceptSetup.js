@@ -11,9 +11,31 @@ const BLOCKED_URL_PATTERNS = [
   'f.clarity.ms'
 ];
 
-export async function setupInterceptors(page, onFound) {
+function isVidfastUrl(url) {
+  return String(url || '').includes('vidfast.pro');
+}
+
+function shouldBlockVidfastNavigation(targetUrl, request) {
+  if (!isVidfastUrl(targetUrl)) {
+    return false;
+  }
+
+  if (request.resourceType() !== 'document' || !request.isNavigationRequest()) {
+    return false;
+  }
+
+  try {
+    const requestHost = new URL(request.url()).hostname;
+    return requestHost !== 'vidfast.pro';
+  } catch {
+    return false;
+  }
+}
+
+export async function setupInterceptors(page, targetUrl, onFound) {
   const state = createDetectorState();
   const context = page.context();
+  const isVidfastTarget = isVidfastUrl(targetUrl);
 
   await context.route('**/*', async (route) => {
     const request = route.request();
@@ -22,6 +44,12 @@ export async function setupInterceptors(page, onFound) {
 
     if (['document', 'fetch', 'xhr', 'media'].includes(resourceType)) {
       console.log(new Date().toISOString(), '[request]', resourceType, url);
+    }
+
+    if (shouldBlockVidfastNavigation(targetUrl, request)) {
+      console.log(new Date().toISOString(), '[vidfast] blocked navigation', url);
+      await route.abort().catch(() => undefined);
+      return;
     }
 
     if (isVideoUrl(url, state)) {
@@ -34,7 +62,10 @@ export async function setupInterceptors(page, onFound) {
       });
     }
 
-    if (BLOCKED_RESOURCE_TYPES.has(resourceType) || BLOCKED_URL_PATTERNS.some((pattern) => url.includes(pattern))) {
+    if (
+      (!isVidfastTarget && BLOCKED_RESOURCE_TYPES.has(resourceType)) ||
+      (!isVidfastTarget && BLOCKED_URL_PATTERNS.some((pattern) => url.includes(pattern)))
+    ) {
       await route.abort().catch(() => undefined);
       return;
     }
