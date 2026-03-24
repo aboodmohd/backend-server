@@ -67,6 +67,10 @@ function isVidfastUrl(url) {
   return String(url || '').includes('vidfast.pro');
 }
 
+function isVidfastResolverUrl(url) {
+  return /^https:\/\/vidfast\.pro\/APA91/i.test(String(url || ''));
+}
+
 function isLikelyStreamUrl(url) {
   const value = String(url || '');
   return STREAM_URL_PATTERNS.some((pattern) => pattern.test(value));
@@ -638,6 +642,24 @@ async function triggerVidfastBootstrap(page, targetUrl) {
   return result;
 }
 
+async function waitForVidfastRuntime(page, timeoutMs = 12000) {
+  const startedAt = Date.now();
+
+  while (!page.isClosed() && Date.now() - startedAt < timeoutMs) {
+    const runtimeReady = await page
+      .evaluate(() => Boolean(window.__VIDFAST_RUNTIME__?.ap || window.__VIDFAST_AP__))
+      .catch(() => false);
+
+    if (runtimeReady) {
+      return true;
+    }
+
+    await page.waitForTimeout(250).catch(() => undefined);
+  }
+
+  return false;
+}
+
 export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   console.log(new Date().toISOString(), '[extractor] starting', targetUrl);
   const browser = await getBrowser(options);
@@ -654,6 +676,7 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   const page = await context.newPage();
   let firstResultResolved = false;
   let lastRelevantActivityAt = Date.now();
+  const vidfastResolverHints = [];
 
   const stopIfResolved = () => firstResultResolved || page.isClosed();
 
@@ -677,6 +700,27 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     }
   };
 
+  const rememberVidfastResolverHint = (entry) => {
+    if (!isVidfastUrl(targetUrl) || !entry?.url || !isVidfastResolverUrl(entry.url)) {
+      return;
+    }
+
+    if (vidfastResolverHints.some((item) => item.url === entry.url)) {
+      return;
+    }
+
+    vidfastResolverHints.push({
+      url: entry.url,
+      method: entry.method || 'GET',
+      headers: entry.headers || {},
+      at: new Date().toISOString()
+    });
+
+    if (vidfastResolverHints.length > 6) {
+      vidfastResolverHints.shift();
+    }
+  };
+
   const waitForNetworkSettle = async (quietWindowMs, maxWaitMs, minWaitMs = 0) => {
     const startedAt = Date.now();
 
@@ -694,6 +738,12 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 
   page.on('request', (request) => {
     markActivity(request.url(), request.resourceType());
+
+    rememberVidfastResolverHint({
+      url: request.url(),
+      method: request.method(),
+      headers: request.headers()
+    });
   });
 
   page.on('response', (response) => {
@@ -768,7 +818,10 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   await installVidfastHooks(page, targetUrl);
 
   await setupInterceptors(page, targetUrl, async (result) => {
-    onFound(result);
+    onFound({
+      ...result,
+      resolverHints: vidfastResolverHints.length ? { vidfastRequests: [...vidfastResolverHints] } : undefined
+    });
 
     if (!firstResultResolved) {
       firstResultResolved = true;
@@ -816,10 +869,21 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     await page.evaluate(() => window.scrollBy(0, 500)).catch(() => undefined);
     if (isVidfastUrl(targetUrl)) {
       await page.mouse.click(640, 400).catch(() => undefined);
-      await safeWait(2000);
+      await safeWait(1000);
       await pokePlayers(page, targetUrl);
-      await safeWait(2000);
+      await safeWait(1000);
     }
+
+    if (!stopIfResolved() && isVidfastUrl(targetUrl)) {
+      const runtimeReady = await waitForVidfastRuntime(page, 12000);
+      console.log(new Date().toISOString(), '[vidfast] runtime ready', runtimeReady);
+      if (runtimeReady) {
+        await triggerVidfastBootstrap(page, targetUrl);
+        await safeWait(1000);
+        await waitForNetworkSettle(2000, 8000, 1000);
+      }
+    }
+
     if (!stopIfResolved() && isVidfastUrl(targetUrl)) {
       await triggerVidfastBootstrap(page, targetUrl);
       await safeWait(1500);
