@@ -22,6 +22,10 @@ function isVidfastUrl(url) {
   return String(url || '').includes('vidfast.pro');
 }
 
+function isVideasyUrl(url) {
+  return /player\.videasy\.net/i.test(String(url || ''));
+}
+
 async function tryResolveVidfastFromHints(sourceUrl) {
   const hintEntry = vidfastHintCache.get(`vidfast:${sourceUrl}`);
   const requests = hintEntry?.vidfastRequests || [];
@@ -118,7 +122,7 @@ router.post('/', async (req, res) => {
         if (settled) return;
         settled = true;
         reject(new Error('STREAM_NOT_FOUND'));
-      }, isVidfastUrl(url) ? 75000 : RESOLVE_TIMEOUT_MS);
+      }, isVidfastUrl(url) ? 75000 : isVideasyUrl(url) ? 18000 : RESOLVE_TIMEOUT_MS);
 
       extractVideoUrls(
         url,
@@ -150,6 +154,8 @@ router.post('/', async (req, res) => {
         },
         isVidfastUrl(url)
           ? { settleTimeout: 3000, navigationTimeout: 45000, minWaitAfterLoad: 4000, maxWaitAfterLoad: 18000 }
+          : isVideasyUrl(url)
+          ? { settleTimeout: 2000, navigationTimeout: 30000, minWaitAfterLoad: 6000, maxWaitAfterLoad: 12000 }
           : { settleTimeout: 2000, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 10000 }
       ).catch((error) => {
         if (settled) {

@@ -778,6 +778,7 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   const vidfastResolverHints = [];
   let vidfastRuntimeReadyPromise = null;
   const seenVideasyApiUrls = new Set();
+  const videasyApiStatuses = [];
 
   const stopIfResolved = () => firstResultResolved || page.isClosed();
 
@@ -874,6 +875,13 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   });
 
   page.on('response', async (response) => {
+    if (isVideasyUrl(targetUrl) && isVideasyApiUrl(response.url())) {
+      videasyApiStatuses.push({ url: response.url(), status: response.status() });
+      if (videasyApiStatuses.length > 20) {
+        videasyApiStatuses.shift();
+      }
+    }
+
     if (!isVidfastUrl(targetUrl)) {
       return;
     }
@@ -1005,6 +1013,11 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       await safeWait(4000);
       await primeVideasyPlayer(page, targetUrl);
       await waitForNetworkSettle(2000, 12000, 2000);
+
+      const videasyForbiddenCount = videasyApiStatuses.filter((entry) => entry.status === 403).length;
+      if (videasyForbiddenCount >= 3) {
+        throw new Error('VIDEASY_UPSTREAM_FORBIDDEN');
+      }
     }
 
     if (!stopIfResolved() && isVidfastUrl(targetUrl)) {
