@@ -22,10 +22,20 @@ const VIDEO_CONTENT_TYPES = [
   'video/'
 ];
 
+const NON_STREAM_ASSET_PATTERNS = [
+  /(?:^|\/)_(?:build|ssg|middleware)manifest\.js(?:\?|$)/i,
+  /\.(?:js|mjs|cjs|css|map|json|txt|svg|png|jpe?g|gif|webp|ico|woff2?|ttf)(?:\?|$)/i,
+  /\/favicon\.ico(?:\?|$)/i
+];
+
 const PAYLOAD_URL_REGEX = /https?:\/\/[^"'\s<>()]+/gi;
 
 function normalizeUrlKey(url) {
   return String(url || '').split('?')[0].toLowerCase();
+}
+
+function isNonStreamAssetUrl(url) {
+  return NON_STREAM_ASSET_PATTERNS.some((pattern) => pattern.test(String(url || '')));
 }
 
 export function createDetectorState() {
@@ -36,7 +46,7 @@ export function createDetectorState() {
 
 export function isVideoUrl(url, state) {
   const key = normalizeUrlKey(url);
-  if (!key || /\.ts$/i.test(key) || state.seen.has(key)) {
+  if (!key || /\.ts$/i.test(key) || isNonStreamAssetUrl(key) || state.seen.has(key)) {
     return false;
   }
 
@@ -76,7 +86,7 @@ export function extractStreamFromPayload(payload) {
       parsed?.url ||
       parsed?.file;
 
-    if (candidate && VIDEO_PATTERNS.some((pattern) => pattern.test(candidate))) {
+    if (candidate && !isNonStreamAssetUrl(candidate) && VIDEO_PATTERNS.some((pattern) => pattern.test(candidate))) {
       return candidate;
     }
   } catch {
@@ -91,7 +101,7 @@ export function extractStreamFromPayload(payload) {
       .replace(/\\\//g, '/')
       .replace(/\\"/g, '"');
 
-    if (VIDEO_PATTERNS.some((pattern) => pattern.test(candidate))) {
+    if (!isNonStreamAssetUrl(candidate) && VIDEO_PATTERNS.some((pattern) => pattern.test(candidate))) {
       return candidate;
     }
   }

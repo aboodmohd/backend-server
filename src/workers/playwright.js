@@ -24,6 +24,12 @@ const STREAM_URL_PATTERNS = [
   /video\.m3u8/i
 ];
 
+const NON_STREAM_ASSET_PATTERNS = [
+  /(?:^|\/)_(?:build|ssg|middleware)manifest\.js(?:\?|$)/i,
+  /\.(?:js|mjs|cjs|css|map|json|txt|svg|png|jpe?g|gif|webp|ico|woff2?|ttf)(?:\?|$)/i,
+  /\/favicon\.ico(?:\?|$)/i
+];
+
 function getBrowser(options = {}) {
   if (!browserPromise) {
     browserPromise = chromium.launch({
@@ -73,6 +79,9 @@ function isVidfastResolverUrl(url) {
 
 function isLikelyStreamUrl(url) {
   const value = String(url || '');
+  if (NON_STREAM_ASSET_PATTERNS.some((pattern) => pattern.test(value))) {
+    return false;
+  }
   return STREAM_URL_PATTERNS.some((pattern) => pattern.test(value));
 }
 
