@@ -634,6 +634,8 @@ async function triggerVidfastBootstrap(page, targetUrl) {
   }).catch((error) => ({ ok: false, reason: error?.message || String(error) }));
 
   console.log(new Date().toISOString(), '[vidfast] manual bootstrap', JSON.stringify(result));
+
+  return result;
 }
 
 export async function extractVideoUrls(targetUrl, onFound, options = {}) {
@@ -818,16 +820,24 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       await pokePlayers(page, targetUrl);
       await safeWait(2000);
     }
-    await waitForNetworkSettle(
-      options.settleTimeout ?? (isVidfastUrl(targetUrl) ? 4000 : 2000),
-      options.maxWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 28000 : 10000),
-      options.minWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 12000 : 5000)
-    );
+    if (!stopIfResolved() && isVidfastUrl(targetUrl)) {
+      await triggerVidfastBootstrap(page, targetUrl);
+      await safeWait(1500);
+      await waitForNetworkSettle(2500, 12000, 2000);
+    }
+
+    if (!stopIfResolved()) {
+      await waitForNetworkSettle(
+        options.settleTimeout ?? (isVidfastUrl(targetUrl) ? 3000 : 2000),
+        options.maxWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 18000 : 10000),
+        options.minWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 4000 : 5000)
+      );
+    }
 
     if (!stopIfResolved() && isVidfastUrl(targetUrl)) {
       await triggerVidfastBootstrap(page, targetUrl);
-      await safeWait(3000);
-      await waitForNetworkSettle(3000, 12000, 3000);
+      await safeWait(1500);
+      await waitForNetworkSettle(2500, 8000, 1500);
     }
 
     if (!stopIfResolved() && isVidfastUrl(targetUrl)) {

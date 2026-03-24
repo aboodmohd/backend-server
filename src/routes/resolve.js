@@ -68,7 +68,7 @@ router.post('/', async (req, res) => {
           });
         },
         isVidfastUrl(url)
-          ? { settleTimeout: 5000, navigationTimeout: 45000, minWaitAfterLoad: 18000, maxWaitAfterLoad: 45000 }
+          ? { settleTimeout: 3000, navigationTimeout: 45000, minWaitAfterLoad: 4000, maxWaitAfterLoad: 18000 }
           : { settleTimeout: 2000, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 10000 }
       ).catch((error) => {
         if (settled) {
