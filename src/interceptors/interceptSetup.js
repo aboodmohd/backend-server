@@ -1,4 +1,5 @@
 import { createDetectorState, detectType, extractStreamFromPayload, isVideoContentType, isVideoUrl } from './index.js';
+import { fetchVideasyThroughProxy, shouldUseVideasyProxy } from '../utils/proxyFetch.js';
 
 const BLOCKED_RESOURCE_TYPES = new Set(['image', 'font', 'stylesheet']);
 const BLOCKED_URL_PATTERNS = [
@@ -162,7 +163,7 @@ async function maybeProxyVideasyApi(route, targetUrl) {
   }
 
   const request = route.request();
-  const response = await route.fetch({
+  const upstream = await fetchVideasyThroughProxy(request.url(), {
     method: request.method(),
     headers: {
       ...request.headers(),
@@ -170,14 +171,18 @@ async function maybeProxyVideasyApi(route, targetUrl) {
       referer: 'https://player.videasy.net/'
     }
   });
-  const body = await response.text();
-  console.log(new Date().toISOString(), '[videasy] proxied api', request.url(), response.status());
+  console.log(
+    new Date().toISOString(),
+    shouldUseVideasyProxy() ? '[videasy] proxied api via env proxy' : '[videasy] proxied api',
+    request.url(),
+    upstream.status
+  );
 
   await route.fulfill({
-    response,
-    body,
+    status: upstream.status,
+    body: upstream.body,
     headers: {
-      ...response.headers(),
+      ...upstream.headers,
       'access-control-allow-origin': 'https://player.videasy.net',
       'access-control-allow-methods': 'GET,HEAD,OPTIONS',
       'access-control-allow-headers': '*',
