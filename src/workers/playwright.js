@@ -308,6 +308,19 @@ async function installVidfastHooks(page, targetUrl) {
       pushError(event?.reason?.stack || event?.reason?.message || event?.reason, 'unhandledrejection');
     });
 
+    if (!globalThis.Buffer) {
+      globalThis.Buffer = {
+        from(value, encoding = 'utf8') {
+          if (encoding === 'base64') {
+            const binary = atob(String(value || ''));
+            return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+          }
+
+          return new TextEncoder().encode(String(value || ''));
+        }
+      };
+    }
+
     const originalAppendChild = Element.prototype.appendChild;
     Element.prototype.appendChild = function(child) {
       if (child instanceof HTMLScriptElement) {
@@ -677,6 +690,7 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   let firstResultResolved = false;
   let lastRelevantActivityAt = Date.now();
   const vidfastResolverHints = [];
+  let vidfastRuntimeReadyPromise = null;
 
   const stopIfResolved = () => firstResultResolved || page.isClosed();
 
@@ -853,6 +867,10 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     await logVidfastPageState(page, targetUrl);
     await patchVidfastVisibility(page, targetUrl);
 
+    if (isVidfastUrl(targetUrl)) {
+      vidfastRuntimeReadyPromise = waitForVidfastRuntime(page, 25000);
+    }
+
     await safeWait(isVidfastUrl(targetUrl) ? 2000 : 250);
 
     if (stopIfResolved()) {
@@ -869,13 +887,13 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     await page.evaluate(() => window.scrollBy(0, 500)).catch(() => undefined);
     if (isVidfastUrl(targetUrl)) {
       await page.mouse.click(640, 400).catch(() => undefined);
-      await safeWait(1000);
+      await safeWait(500);
       await pokePlayers(page, targetUrl);
-      await safeWait(1000);
+      await safeWait(500);
     }
 
     if (!stopIfResolved() && isVidfastUrl(targetUrl)) {
-      const runtimeReady = await waitForVidfastRuntime(page, 12000);
+      const runtimeReady = await (vidfastRuntimeReadyPromise || waitForVidfastRuntime(page, 12000));
       console.log(new Date().toISOString(), '[vidfast] runtime ready', runtimeReady);
       if (runtimeReady) {
         await triggerVidfastBootstrap(page, targetUrl);
