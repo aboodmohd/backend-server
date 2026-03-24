@@ -163,33 +163,54 @@ async function maybeProxyVideasyApi(route, targetUrl) {
   }
 
   const request = route.request();
-  const upstream = await fetchVideasyThroughProxy(request.url(), {
-    method: request.method(),
-    headers: {
-      ...request.headers(),
-      origin: 'https://player.videasy.net',
-      referer: 'https://player.videasy.net/'
-    }
-  });
-  console.log(
-    new Date().toISOString(),
-    shouldUseVideasyProxy() ? '[videasy] proxied api via env proxy' : '[videasy] proxied api',
-    request.url(),
-    upstream.status,
-    upstream.proxyUrl || 'direct'
-  );
+  try {
+    const upstream = await fetchVideasyThroughProxy(request.url(), {
+      method: request.method(),
+      headers: {
+        ...request.headers(),
+        origin: 'https://player.videasy.net',
+        referer: 'https://player.videasy.net/'
+      }
+    });
+    console.log(
+      new Date().toISOString(),
+      shouldUseVideasyProxy() ? '[videasy] proxied api via env proxy' : '[videasy] proxied api',
+      request.url(),
+      upstream.status,
+      upstream.proxyUrl || 'direct'
+    );
 
-  await route.fulfill({
-    status: upstream.status,
-    body: upstream.body,
-    headers: {
-      ...upstream.headers,
-      'access-control-allow-origin': 'https://player.videasy.net',
-      'access-control-allow-methods': 'GET,HEAD,OPTIONS',
-      'access-control-allow-headers': '*',
-      vary: 'Origin'
-    }
-  });
+    await route.fulfill({
+      status: upstream.status,
+      body: upstream.body,
+      headers: {
+        ...upstream.headers,
+        'access-control-allow-origin': 'https://player.videasy.net',
+        'access-control-allow-methods': 'GET,HEAD,OPTIONS',
+        'access-control-allow-headers': '*',
+        vary: 'Origin'
+      }
+    });
+  } catch (error) {
+    console.log(
+      new Date().toISOString(),
+      '[videasy] proxy request failed',
+      request.url(),
+      error?.message || String(error)
+    );
+
+    await route.fulfill({
+      status: 502,
+      body: JSON.stringify({ error: 'VIDEASY_PROXY_FAILED' }),
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'access-control-allow-origin': 'https://player.videasy.net',
+        'access-control-allow-methods': 'GET,HEAD,OPTIONS',
+        'access-control-allow-headers': '*',
+        vary: 'Origin'
+      }
+    });
+  }
 
   return true;
 }
