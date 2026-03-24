@@ -161,9 +161,17 @@ async function maybeProxyVideasyApi(route, targetUrl) {
     return false;
   }
 
-  const response = await route.fetch();
+  const request = route.request();
+  const response = await route.fetch({
+    method: request.method(),
+    headers: {
+      ...request.headers(),
+      origin: 'https://player.videasy.net',
+      referer: 'https://player.videasy.net/'
+    }
+  });
   const body = await response.text();
-  console.log(new Date().toISOString(), '[videasy] proxied api', route.request().url());
+  console.log(new Date().toISOString(), '[videasy] proxied api', request.url(), response.status());
 
   await route.fulfill({
     response,
