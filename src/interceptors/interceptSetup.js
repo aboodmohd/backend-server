@@ -175,7 +175,8 @@ async function maybeProxyVideasyApi(route, targetUrl) {
     new Date().toISOString(),
     shouldUseVideasyProxy() ? '[videasy] proxied api via env proxy' : '[videasy] proxied api',
     request.url(),
-    upstream.status
+    upstream.status,
+    upstream.proxyUrl || 'direct'
   );
 
   await route.fulfill({

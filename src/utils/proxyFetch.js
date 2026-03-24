@@ -2,12 +2,23 @@ import http from 'node:http';
 import https from 'node:https';
 import tls from 'node:tls';
 
+function splitProxyEnv(value) {
+  return String(value || '')
+    .split(/[\n,]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function getVideasyProxyUrls() {
+  return splitProxyEnv(process.env.VIDEASY_PROXY_URL || process.env.VIDEASY_API_PROXY_URL || '');
+}
+
 function getVideasyProxyUrl() {
-  return process.env.VIDEASY_PROXY_URL || process.env.VIDEASY_API_PROXY_URL || '';
+  return getVideasyProxyUrls()[0] || '';
 }
 
 function shouldUseVideasyProxy() {
-  return Boolean(getVideasyProxyUrl());
+  return getVideasyProxyUrls().length > 0;
 }
 
 function normalizeHeaders(headers = {}) {
@@ -78,9 +89,8 @@ function openProxyTunnel(targetUrl, proxyUrl, headers) {
   });
 }
 
-async function proxyHttpsRequest(targetUrl, options = {}) {
+async function proxyHttpsRequest(targetUrl, proxyUrl, options = {}) {
   const target = new URL(targetUrl);
-  const proxyUrl = getVideasyProxyUrl();
   const headers = normalizeHeaders(options.headers);
   const socket = await openProxyTunnel(targetUrl, proxyUrl, headers);
 
@@ -131,11 +141,39 @@ async function directRequest(targetUrl, options = {}) {
 }
 
 export async function fetchVideasyThroughProxy(targetUrl, options = {}) {
-  if (!shouldUseVideasyProxy()) {
-    return directRequest(targetUrl, options);
+  const proxyUrls = getVideasyProxyUrls();
+
+  if (!proxyUrls.length) {
+    const directResult = await directRequest(targetUrl, options);
+    return {
+      ...directResult,
+      proxyUrl: null
+    };
   }
 
-  return proxyHttpsRequest(targetUrl, options);
+  let lastError;
+
+  for (const proxyUrl of proxyUrls) {
+    try {
+      const result = await proxyHttpsRequest(targetUrl, proxyUrl, options);
+      if (result.status !== 403) {
+        return {
+          ...result,
+          proxyUrl
+        };
+      }
+
+      lastError = new Error(`Proxy returned 403 via ${proxyUrl}`);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  return directRequest(targetUrl, options);
 }
 
-export { getVideasyProxyUrl, shouldUseVideasyProxy };
+export { getVideasyProxyUrl, getVideasyProxyUrls, shouldUseVideasyProxy };
