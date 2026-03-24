@@ -32,6 +32,19 @@ function shouldBlockVidfastNavigation(targetUrl, request) {
   }
 }
 
+function shouldBlockVidfastScript(targetUrl, request) {
+  if (!isVidfastUrl(targetUrl) || request.resourceType() !== 'script') {
+    return false;
+  }
+
+  try {
+    const requestHost = new URL(request.url()).hostname;
+    return requestHost !== 'vidfast.pro';
+  } catch {
+    return false;
+  }
+}
+
 export async function setupInterceptors(page, targetUrl, onFound) {
   const state = createDetectorState();
   const context = page.context();
@@ -48,6 +61,12 @@ export async function setupInterceptors(page, targetUrl, onFound) {
 
     if (shouldBlockVidfastNavigation(targetUrl, request)) {
       console.log(new Date().toISOString(), '[vidfast] blocked navigation', url);
+      await route.abort().catch(() => undefined);
+      return;
+    }
+
+    if (shouldBlockVidfastScript(targetUrl, request)) {
+      console.log(new Date().toISOString(), '[vidfast] blocked script', url);
       await route.abort().catch(() => undefined);
       return;
     }
