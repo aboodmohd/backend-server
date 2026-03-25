@@ -1,5 +1,4 @@
 import { createDetectorState, detectType, extractStreamFromPayload, isVideoContentType, isVideoUrl } from './index.js';
-import { fetchVideasyThroughProxy, shouldUseVideasyProxy } from '../utils/proxyFetch.js';
 
 const BLOCKED_RESOURCE_TYPES = new Set(['image', 'font', 'stylesheet']);
 const BLOCKED_URL_PATTERNS = [
@@ -54,14 +53,6 @@ function isVidfastUrl(url) {
 
 function isVideasyUrl(url) {
   return /player\.videasy\.net/i.test(String(url || ''));
-}
-
-function shouldProxyVideasyApi(targetUrl, request) {
-  if (!isVideasyUrl(targetUrl) || request.resourceType() !== 'fetch') {
-    return false;
-  }
-
-  return /https:\/\/(?:api\d?\.videasy\.net)\/(?:[^/?]+)\/sources-with-title\?/i.test(request.url());
 }
 
 function shouldBlockVideasyScript(targetUrl, request) {
@@ -153,55 +144,6 @@ async function maybePatchVidfastScript(route, targetUrl) {
   return true;
 }
 
-async function maybeProxyVideasyApi(route, targetUrl) {
-  if (!shouldProxyVideasyApi(targetUrl, route.request())) {
-    return false;
-  }
-
-  const request = route.request();
-  try {
-    const upstream = await fetchVideasyThroughProxy(request.url(), {
-      method: request.method(),
-      headers: {
-        ...request.headers(),
-        origin: 'https://player.videasy.net',
-        referer: 'https://player.videasy.net/'
-      }
-    });
-    console.log(
-      new Date().toISOString(),
-      shouldUseVideasyProxy() ? '[videasy] proxied api via env proxy' : '[videasy] proxied api',
-      request.url(),
-      upstream.status,
-      upstream.proxyUrl || 'direct',
-      upstream.fallbackFromProxyError ? `fallback:${upstream.fallbackFromProxyError}` : 'ok'
-    );
-
-    await route.fulfill({
-      status: upstream.status,
-      body: upstream.body,
-      headers: {
-        ...upstream.headers,
-        'access-control-allow-origin': 'https://player.videasy.net',
-        'access-control-allow-methods': 'GET,HEAD,OPTIONS',
-        'access-control-allow-headers': '*',
-        vary: 'Origin'
-      }
-    });
-  } catch (error) {
-    console.log(
-      new Date().toISOString(),
-      '[videasy] proxy request failed',
-      request.url(),
-      error?.message || String(error)
-    );
-
-    await route.continue().catch(() => undefined);
-  }
-
-  return true;
-}
-
 export async function setupInterceptors(page, targetUrl, onFound) {
   const state = createDetectorState();
   const context = page.context();
@@ -235,10 +177,6 @@ export async function setupInterceptors(page, targetUrl, onFound) {
     }
 
     if (await maybePatchVidfastScript(route, targetUrl).catch(() => false)) {
-      return;
-    }
-
-    if (await maybeProxyVideasyApi(route, targetUrl).catch(() => false)) {
       return;
     }
 

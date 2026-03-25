@@ -707,58 +707,6 @@ async function waitForVidfastRuntime(page, timeoutMs = 12000) {
   return false;
 }
 
-async function tryResolveVideasyApi(entry, targetUrl) {
-  if (!isVideasyApiUrl(entry?.url)) {
-    return null;
-  }
-
-  try {
-    const response = await fetch(entry.url, {
-      method: entry.method || 'GET',
-      headers: {
-        accept: 'application/json, text/plain, */*',
-        'accept-language': 'en-US,en;q=0.9',
-        origin: 'https://player.videasy.net',
-        referer: targetUrl,
-        'user-agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
-          'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-          'Chrome/120.0.0.0 Safari/537.36'
-      }
-    });
-
-    if (!response.ok) {
-      return null;
-    }
-
-    const contentType = response.headers.get('content-type') || '';
-    const body = await response.text();
-    const streamUrl = extractStreamFromPayload(body);
-    if (!streamUrl) {
-      return null;
-    }
-
-    console.log(new Date().toISOString(), '[videasy] resolved api hint', entry.url);
-    return {
-      url: streamUrl,
-      type: detectType(streamUrl, contentType),
-      headers: {
-        origin: 'https://player.videasy.net',
-        referer: 'https://player.videasy.net/',
-        'user-agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
-          'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-          'Chrome/120.0.0.0 Safari/537.36'
-      },
-      foundAt: new Date().toISOString(),
-      via: 'videasy-api'
-    };
-  } catch (error) {
-    console.log(new Date().toISOString(), '[videasy] api hint failed', entry.url, error?.message || String(error));
-    return null;
-  }
-}
-
 export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   console.log(new Date().toISOString(), '[extractor] starting', targetUrl);
   const browser = await getBrowser(options);
@@ -777,7 +725,6 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   let lastRelevantActivityAt = Date.now();
   const vidfastResolverHints = [];
   let vidfastRuntimeReadyPromise = null;
-  const seenVideasyApiUrls = new Set();
   const videasyApiStatuses = [];
 
   const stopIfResolved = () => firstResultResolved || page.isClosed();
@@ -846,28 +793,6 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       method: request.method(),
       headers: request.headers()
     });
-
-    if (!stopIfResolved() && isVideasyUrl(targetUrl) && isVideasyApiUrl(request.url()) && !seenVideasyApiUrls.has(request.url())) {
-      seenVideasyApiUrls.add(request.url());
-      void tryResolveVideasyApi(
-        {
-          url: request.url(),
-          method: request.method(),
-          headers: request.headers()
-        },
-        targetUrl
-      ).then(async (result) => {
-        if (!result || stopIfResolved()) {
-          return;
-        }
-
-        onFound(result);
-        if (!firstResultResolved) {
-          firstResultResolved = true;
-          await page.close().catch(() => undefined);
-        }
-      });
-    }
   });
 
   page.on('response', (response) => {
@@ -876,9 +801,43 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 
   page.on('response', async (response) => {
     if (isVideasyUrl(targetUrl) && isVideasyApiUrl(response.url())) {
-      videasyApiStatuses.push({ url: response.url(), status: response.status() });
+      const url = response.url();
+      const status = response.status();
+      videasyApiStatuses.push({ url, status });
       if (videasyApiStatuses.length > 20) {
         videasyApiStatuses.shift();
+      }
+
+      try {
+        const body = await response.text();
+        console.log(new Date().toISOString(), '[videasy:api]', status, url, '->', body.slice(0, 500));
+
+        if (!response.ok() || stopIfResolved()) {
+          return;
+        }
+
+        const streamUrl = extractStreamFromPayload(body);
+        if (!streamUrl) {
+          return;
+        }
+
+        onFound({
+          url: streamUrl,
+          type: detectType(streamUrl, response.headers()['content-type'] || ''),
+          headers: {
+            ...response.request().headers(),
+            ...response.headers()
+          },
+          foundAt: new Date().toISOString(),
+          via: 'videasy-browser-api'
+        });
+
+        if (!firstResultResolved) {
+          firstResultResolved = true;
+          await page.close().catch(() => undefined);
+        }
+      } catch (error) {
+        console.log(new Date().toISOString(), '[videasy:api:error]', url, error?.message || String(error));
       }
     }
 
