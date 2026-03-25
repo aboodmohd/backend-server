@@ -61,7 +61,7 @@ function shouldProxyVideasyApi(targetUrl, request) {
     return false;
   }
 
-  return /https:\/\/api\d?\.videasy\.net\/.+\/sources-with-title\?/i.test(request.url());
+  return /https:\/\/(?:api\d?\.videasy\.net)\/(?:[^/?]+)\/sources-with-title\?/i.test(request.url());
 }
 
 function shouldBlockVideasyScript(targetUrl, request) {

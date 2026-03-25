@@ -64,7 +64,7 @@ function getVideasyMetadataUrl(details) {
   return `https://db.videasy.net/3/${details.mediaType}/${details.tmdbId}?append_to_response=external_ids&language=en`;
 }
 
-function buildVideasyResolveUrl(details, metadata) {
+function buildVideasyResolveParams(details, metadata) {
   const title = metadata?.title || metadata?.name || metadata?.original_title || metadata?.original_name;
   const releaseDate = metadata?.release_date || metadata?.first_air_date || '';
   const year = String(releaseDate).slice(0, 4);
@@ -87,7 +87,19 @@ function buildVideasyResolveUrl(details, metadata) {
     params.set('imdbId', imdbId);
   }
 
-  return `https://api.videasy.net/myflixerzupcloud/sources-with-title?${params.toString()}`;
+  return params;
+}
+
+function buildVideasyResolveUrls(details, metadata) {
+  const params = buildVideasyResolveParams(details, metadata);
+  if (!params) {
+    return [];
+  }
+
+  return [
+    `https://api.videasy.net/myflixerzupcloud/sources-with-title?${params.toString()}`,
+    `https://api.videasy.net/cdn/sources-with-title?${params.toString()}`
+  ];
 }
 
 async function tryResolveVideasyDirect(sourceUrl) {
@@ -112,61 +124,66 @@ async function tryResolveVideasyDirect(sourceUrl) {
     }
 
     const metadata = await metadataResponse.json();
-    const apiUrl = buildVideasyResolveUrl(details, metadata);
-    if (!apiUrl) {
+    const apiUrls = buildVideasyResolveUrls(details, metadata);
+    if (!apiUrls.length) {
       console.log(new Date().toISOString(), '[videasy] metadata incomplete', sourceUrl);
       return null;
     }
 
-    const upstream = await fetchVideasyThroughProxy(apiUrl, {
-      method: 'GET',
-      headers: {
-        accept: 'application/json, text/plain, */*',
-        'accept-language': 'en-US,en;q=0.9',
-        origin: 'https://player.videasy.net',
-        referer: sourceUrl,
-        'user-agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
-          'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-          'Chrome/120.0.0.0 Safari/537.36'
+    for (const apiUrl of apiUrls) {
+      const upstream = await fetchVideasyThroughProxy(apiUrl, {
+        method: 'GET',
+        headers: {
+          accept: 'application/json, text/plain, */*',
+          'accept-language': 'en-US,en;q=0.9',
+          origin: 'https://player.videasy.net',
+          referer: sourceUrl,
+          'user-agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
+            'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+            'Chrome/120.0.0.0 Safari/537.36'
+        }
+      });
+
+      console.log(
+        new Date().toISOString(),
+        shouldUseVideasyProxy() ? '[videasy] direct api via env proxy' : '[videasy] direct api',
+        apiUrl,
+        upstream.status,
+        upstream.proxyUrl || 'direct',
+        upstream.fallbackFromProxyError ? `fallback:${upstream.fallbackFromProxyError}` : 'ok'
+      );
+
+      if (upstream.status >= 400) {
+        continue;
       }
-    });
 
-    console.log(
-      new Date().toISOString(),
-      shouldUseVideasyProxy() ? '[videasy] direct api via env proxy' : '[videasy] direct api',
-      apiUrl,
-      upstream.status,
-      upstream.proxyUrl || 'direct'
-    );
+      const streamUrl = extractStreamFromPayload(upstream.body);
+      if (!streamUrl) {
+        console.log(new Date().toISOString(), '[videasy] no stream in api payload', apiUrl);
+        continue;
+      }
 
-    if (upstream.status >= 400) {
-      return null;
+      return {
+        success: true,
+        url: streamUrl,
+        stream: streamUrl,
+        type: detectType(streamUrl, upstream.headers['content-type'] || ''),
+        headers: normalizeHeaders({
+          origin: 'https://player.videasy.net',
+          referer: 'https://player.videasy.net/',
+          'user-agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
+            'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+            'Chrome/120.0.0.0 Safari/537.36'
+        }),
+        provider: 'videasy-direct',
+        sourceUrl,
+        qualities: []
+      };
     }
 
-    const streamUrl = extractStreamFromPayload(upstream.body);
-    if (!streamUrl) {
-      console.log(new Date().toISOString(), '[videasy] no stream in api payload', apiUrl);
-      return null;
-    }
-
-    return {
-      success: true,
-      url: streamUrl,
-      stream: streamUrl,
-      type: detectType(streamUrl, upstream.headers['content-type'] || ''),
-      headers: normalizeHeaders({
-        origin: 'https://player.videasy.net',
-        referer: 'https://player.videasy.net/',
-        'user-agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
-          'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-          'Chrome/120.0.0.0 Safari/537.36'
-      }),
-      provider: 'videasy-direct',
-      sourceUrl,
-      qualities: []
-    };
+    return null;
   } catch (error) {
     console.log(new Date().toISOString(), '[videasy] direct resolve failed', sourceUrl, error?.message || String(error));
     return null;

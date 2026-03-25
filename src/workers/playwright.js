@@ -78,7 +78,7 @@ function isVideasyUrl(url) {
 }
 
 function isVideasyApiUrl(url) {
-  return /https:\/\/api\d?\.videasy\.net\/.+\/sources-with-title\?/i.test(String(url || ''));
+  return /https:\/\/(?:api\d?\.videasy\.net)\/(?:[^/?]+)\/sources-with-title\?/i.test(String(url || ''));
 }
 
 async function primeVideasyPlayer(page, targetUrl) {
