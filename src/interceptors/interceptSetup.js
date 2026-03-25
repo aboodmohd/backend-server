@@ -173,7 +173,8 @@ async function maybeProxyVideasyApi(route, targetUrl) {
       shouldUseVideasyProxy() ? '[videasy] proxied api via env proxy' : '[videasy] proxied api',
       request.url(),
       upstream.status,
-      upstream.proxyUrl || 'direct'
+      upstream.proxyUrl || 'direct',
+      upstream.fallbackFromProxyError ? `fallback:${upstream.fallbackFromProxyError}` : 'ok'
     );
 
     await route.fulfill({
@@ -195,17 +196,7 @@ async function maybeProxyVideasyApi(route, targetUrl) {
       error?.message || String(error)
     );
 
-    await route.fulfill({
-      status: 502,
-      body: JSON.stringify({ error: 'VIDEASY_PROXY_FAILED' }),
-      headers: {
-        'content-type': 'application/json; charset=utf-8',
-        'access-control-allow-origin': 'https://player.videasy.net',
-        'access-control-allow-methods': 'GET,HEAD,OPTIONS',
-        'access-control-allow-headers': '*',
-        vary: 'Origin'
-      }
-    });
+    await route.continue().catch(() => undefined);
   }
 
   return true;
