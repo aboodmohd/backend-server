@@ -71,11 +71,7 @@ function shouldBlockVideasyScript(targetUrl, request) {
 
   try {
     const parsed = new URL(request.url());
-    if (parsed.hostname !== 'player.videasy.net') {
-      return true;
-    }
-
-    return parsed.pathname === '/scripts/gk.js';
+    return !['player.videasy.net', 'users.videasy.net', 'api.videasy.net', 'db.videasy.net'].includes(parsed.hostname);
   } catch {
     return false;
   }
