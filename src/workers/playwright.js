@@ -1070,3 +1070,96 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 export async function warmBrowser() {
   await getBrowser();
 }
+
+export async function decryptVideasyPayload(encryptedPayload, mediaId, targetUrl = 'https://player.videasy.net/') {
+  const browser = await getBrowser();
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
+      'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+      'Chrome/120.0.0.0 Safari/537.36'
+  });
+  const page = await context.newPage();
+
+  try {
+    await page.goto(targetUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    });
+
+    return await page.evaluate(async ({ encrypted, numericMediaId }) => {
+      const compiled = await WebAssembly.compileStreaming(fetch('https://player.videasy.net/module.wasm'));
+      const { exports } = await WebAssembly.instantiate(compiled, {
+        env: Object.assign(Object.create(globalThis), {
+          seed: () => Date.now() * Math.random(),
+          abort(message, file, line, column) {
+            throw new Error(`${message}:${file}:${line}:${column}`);
+          }
+        })
+      });
+      const memory = exports.memory;
+
+      const readString = (ptr) => {
+        if (!ptr) {
+          return null;
+        }
+
+        const end = ptr + new Uint32Array(memory.buffer)[(ptr - 4) >>> 2] >>> 1;
+        const buffer = new Uint16Array(memory.buffer);
+        let cursor = ptr >>> 1;
+        let output = '';
+
+        while (end - cursor > 1024) {
+          output += String.fromCharCode(...buffer.subarray(cursor, cursor += 1024));
+        }
+
+        return output + String.fromCharCode(...buffer.subarray(cursor, end));
+      };
+
+      const writeString = (value) => {
+        const ptr = exports.__new(value.length << 1, 2) >>> 0;
+        const buffer = new Uint16Array(memory.buffer);
+
+        for (let index = 0; index < value.length; index += 1) {
+          buffer[(ptr >>> 1) + index] = value.charCodeAt(index);
+        }
+
+        return ptr;
+      };
+
+      Function(readString(exports.serve() >>> 0))();
+
+      const hash = await new Promise((resolve, reject) => {
+        const startedAt = Date.now();
+
+        const poll = () => {
+          if (window.hash) {
+            resolve(window.hash);
+            return;
+          }
+
+          if (Date.now() - startedAt > 10000) {
+            reject(new Error('VIDEASY_HASH_TIMEOUT'));
+            return;
+          }
+
+          setTimeout(poll, 25);
+        };
+
+        poll();
+      });
+
+      if (!exports.verify(writeString(hash))) {
+        throw new Error('VIDEASY_HASH_VERIFY_FAILED');
+      }
+
+      return readString(exports.decrypt(writeString(encrypted), numericMediaId) >>> 0) || '';
+    }, {
+      encrypted: String(encryptedPayload || ''),
+      numericMediaId: Number(mediaId)
+    });
+  } finally {
+    await context.close().catch(() => undefined);
+  }
+}
