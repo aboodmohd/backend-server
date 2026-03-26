@@ -1,13 +1,18 @@
 import { Router } from 'express';
+import { createDecipheriv, createHash } from 'node:crypto';
 import { createCacheStore } from '../store/results.js';
 import { extractVideoUrls } from '../workers/playwright.js';
 
 const router = Router();
 const cache = createCacheStore();
 const vidfastHintCache = createCacheStore();
+const vidzeeKeyCache = createCacheStore();
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const SIX_HOURS_MS = 6 * ONE_HOUR_MS;
+const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 const RESOLVE_TIMEOUT_MS = Number(process.env.RESOLVE_TIMEOUT_MS || 30000);
+const VIDZEE_KEY_SECRET = '7c9e2b4a1f6d8a3e5';
+const VIDZEE_SERVER_IDS = ['0', '1', '2', '3', '7', '6', '8', '9', '10', '11', '12'];
 
 function normalizeHeaders(headers = {}) {
   return Object.entries(headers).reduce((acc, [key, value]) => {
@@ -34,6 +39,143 @@ function getProviderKeyFromUrl(url) {
   if (isVidfastUrl(url)) return 'vidfast';
   if (isVideasyUrl(url)) return 'videasy';
   if (isVidzeeUrl(url)) return 'vidzee';
+  return null;
+}
+
+function parseVidzeeEmbedUrl(url) {
+  try {
+    const { pathname } = new URL(url);
+    const parts = pathname.split('/').filter(Boolean);
+
+    if (parts[0] !== 'v2' || parts[1] !== 'embed') {
+      return null;
+    }
+
+    if (parts[2] === 'movie' && parts[3]) {
+      return { type: 'movie', id: parts[3] };
+    }
+
+    if (parts[2] === 'tv' && parts[3] && parts[4] && parts[5]) {
+      return { type: 'tv', id: parts[3], season: parts[4], episode: parts[5] };
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+async function getVidzeeApiKey() {
+  const cached = vidzeeKeyCache.get('vidzee:api-key');
+  if (cached) {
+    return cached;
+  }
+
+  const response = await fetch('https://core.vidzee.wtf/api-key');
+  if (!response.ok) {
+    throw new Error('VIDZEE_KEY_FETCH_FAILED');
+  }
+
+  const encrypted = (await response.text()).trim();
+  const payload = Buffer.from(encrypted.replace(/\s+/g, ''), 'base64');
+
+  if (payload.length <= 28) {
+    throw new Error('VIDZEE_KEY_INVALID');
+  }
+
+  const iv = payload.subarray(0, 12);
+  const authTag = payload.subarray(12, 28);
+  const ciphertext = payload.subarray(28);
+  const key = createHash('sha256').update(VIDZEE_KEY_SECRET, 'utf8').digest();
+  const decipher = createDecipheriv('aes-256-gcm', key, iv);
+
+  decipher.setAuthTag(authTag);
+
+  let decrypted = decipher.update(ciphertext, undefined, 'utf8');
+  decrypted += decipher.final('utf8');
+
+  vidzeeKeyCache.set('vidzee:api-key', decrypted, ONE_DAY_MS);
+  return decrypted;
+}
+
+function decryptVidzeeStreamLink(encodedLink, apiKey) {
+  const decoded = Buffer.from(String(encodedLink || ''), 'base64').toString('utf8');
+  const [ivBase64, cipherBase64] = decoded.split(':');
+
+  if (!ivBase64 || !cipherBase64) {
+    return null;
+  }
+
+  const iv = Buffer.from(ivBase64, 'base64');
+  const key = Buffer.from(String(apiKey || '').padEnd(32, '\0').slice(0, 32), 'utf8');
+  const decipher = createDecipheriv('aes-256-cbc', key, iv);
+
+  let decrypted = decipher.update(cipherBase64, 'base64', 'utf8');
+  decrypted += decipher.final('utf8');
+  return decrypted || null;
+}
+
+async function tryResolveVidzeeDirect(sourceUrl) {
+  const parsed = parseVidzeeEmbedUrl(sourceUrl);
+  if (!parsed?.id) {
+    return null;
+  }
+
+  const apiKey = await getVidzeeApiKey();
+
+  for (const serverId of VIDZEE_SERVER_IDS) {
+    const apiUrl = new URL('https://player.vidzee.wtf/api/server');
+    apiUrl.searchParams.set('id', parsed.id);
+    apiUrl.searchParams.set('sr', serverId);
+
+    if (parsed.type === 'tv') {
+      apiUrl.searchParams.set('ss', parsed.season);
+      apiUrl.searchParams.set('ep', parsed.episode);
+    }
+
+    try {
+      const response = await fetch(apiUrl, {
+        headers: {
+          accept: 'application/json, text/plain, */*',
+          origin: 'https://player.vidzee.wtf',
+          referer: sourceUrl,
+          'user-agent': 'Mozilla/5.0'
+        }
+      });
+
+      if (!response.ok) {
+        continue;
+      }
+
+      const payload = await response.json();
+      const candidates = Array.isArray(payload?.url) ? payload.url : [];
+
+      for (const candidate of candidates) {
+        const streamUrl = decryptVidzeeStreamLink(candidate?.link, apiKey);
+        if (!streamUrl) {
+          continue;
+        }
+
+        return {
+          success: true,
+          url: streamUrl,
+          stream: streamUrl,
+          type: String(candidate?.type || '').toUpperCase() === 'HLS' ? 'HLS' : streamUrl.includes('.mp4') ? 'MP4' : 'STREAM',
+          headers: normalizeHeaders({
+            ...(payload?.headers || {}),
+            referer: sourceUrl,
+            origin: 'https://player.vidzee.wtf'
+          }),
+          provider: 'vidzee',
+          sourceUrl,
+          qualities: []
+        };
+      }
+    } catch {
+      // Try the next VidZee server.
+    }
+  }
+
   return null;
 }
 
@@ -123,6 +265,15 @@ router.post('/', async (req, res) => {
       cache.set(cacheKey, directResult, ONE_HOUR_MS);
       console.log(new Date().toISOString(), '[resolve] vidfast direct cache hit', directResult.url);
       return res.json({ ...directResult, cached: true });
+    }
+  }
+
+  if (isVidzeeUrl(url)) {
+    const directResult = await tryResolveVidzeeDirect(url).catch(() => null);
+    if (directResult) {
+      cache.set(cacheKey, directResult, ONE_HOUR_MS);
+      console.log(new Date().toISOString(), '[resolve] vidzee direct success', directResult.url);
+      return res.json(directResult);
     }
   }
 
