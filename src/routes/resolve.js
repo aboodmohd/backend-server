@@ -3,7 +3,7 @@ import { createDecipheriv, createHash } from 'node:crypto';
 import CryptoJS from 'crypto-js';
 import { detectType } from '../interceptors/index.js';
 import { createCacheStore } from '../store/results.js';
-import { decryptVideasyPayload, extractVideoUrls } from '../workers/playwright.js';
+import { decryptVideasyPayload, extractVideoUrls, resolveVideasyPayloadInBrowser } from '../workers/playwright.js';
 
 const router = Router();
 const cache = createCacheStore();
@@ -220,11 +220,15 @@ async function tryResolveVideasyDirect(sourceUrl) {
         const encryptedBody = await upstream.text();
         console.log(new Date().toISOString(), '[videasy] direct api', upstream.status, apiUrl);
 
-        if (!upstream.ok || !encryptedBody) {
+        let stageOne = '';
+        if (upstream.ok && encryptedBody) {
+          stageOne = await decryptVideasyPayload(encryptedBody, details.tmdbId, sourceUrl);
+        } else if (upstream.status === 403) {
+          stageOne = await resolveVideasyPayloadInBrowser(apiUrl, details.tmdbId, sourceUrl);
+        } else {
           continue;
         }
 
-        const stageOne = await decryptVideasyPayload(encryptedBody, details.tmdbId, sourceUrl);
         if (!stageOne) {
           continue;
         }
