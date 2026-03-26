@@ -4,7 +4,7 @@ import CryptoJS from 'crypto-js';
 import { ProxyAgent } from 'undici';
 import { detectType } from '../interceptors/index.js';
 import { createCacheStore } from '../store/results.js';
-import { decryptVideasyPayload, extractVideoUrls, resolveVideasyPayloadInBrowser } from '../workers/playwright.js';
+import { decryptVideasyPayload, extractVideoUrls, getVideasySession, resolveVideasyPayloadInBrowser } from '../workers/playwright.js';
 
 const router = Router();
 const cache = createCacheStore();
@@ -167,8 +167,24 @@ function pickVideasySource(payload) {
   return ranked[0] || null;
 }
 
-async function fetchVideasyUrl(url, options = {}) {
-  return fetch(url, videasyProxyAgent ? { ...options, dispatcher: videasyProxyAgent } : options);
+async function fetchVideasyUrl(url, options = {}, session = null) {
+  const headers = {
+    ...(options.headers || {})
+  };
+
+  if (session?.userAgent && !headers['user-agent']) {
+    headers['user-agent'] = session.userAgent;
+  }
+
+  if (session?.cookieHeader && !headers.cookie) {
+    headers.cookie = session.cookieHeader;
+  }
+
+  return fetch(url, {
+    ...options,
+    headers,
+    ...(videasyProxyAgent ? { dispatcher: videasyProxyAgent } : {})
+  });
 }
 
 async function tryResolveVideasyDirect(sourceUrl) {
@@ -178,6 +194,8 @@ async function tryResolveVideasyDirect(sourceUrl) {
   }
 
   try {
+    const videasySession = await getVideasySession(sourceUrl).catch(() => null);
+
     const metadataResponse = await fetch(getVideasyMetadataUrl(details), {
       headers: {
         accept: 'application/json, text/plain, */*',
@@ -201,7 +219,7 @@ async function tryResolveVideasyDirect(sourceUrl) {
 
     let userIp = '';
     try {
-      userIp = (await fetchVideasyUrl('https://api4.ipify.org').then((response) => response.text())).trim();
+      userIp = (await fetchVideasyUrl('https://api4.ipify.org', {}, videasySession).then((response) => response.text())).trim();
     } catch {
       userIp = '';
     }
@@ -219,7 +237,7 @@ async function tryResolveVideasyDirect(sourceUrl) {
               'AppleWebKit/537.36 (KHTML, like Gecko) ' +
               'Chrome/120.0.0.0 Safari/537.36'
           }
-        });
+        }, videasySession);
 
         const encryptedBody = await upstream.text();
         console.log(new Date().toISOString(), '[videasy] direct api', upstream.status, apiUrl);

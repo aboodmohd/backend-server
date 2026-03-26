@@ -7,6 +7,7 @@ import { detectType, extractStreamFromPayload } from '../interceptors/index.js';
 chromium.use(StealthPlugin());
 
 let browserPromise;
+let videasySessionCache = null;
 
 const STREAM_URL_PATTERNS = [
   /\.m3u8(\?|$)/i,
@@ -96,6 +97,14 @@ function getVideasyMediaId(targetUrl) {
   } catch {
     return null;
   }
+}
+
+function getDefaultUserAgent() {
+  return (
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
+    'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+    'Chrome/120.0.0.0 Safari/537.36'
+  );
 }
 
 function pickVideasySourceFromPayload(payload) {
@@ -1113,15 +1122,56 @@ export async function warmBrowser() {
   await getBrowser();
 }
 
+export async function getVideasySession(targetUrl = 'https://player.videasy.net/') {
+  const now = Date.now();
+  if (videasySessionCache && videasySessionCache.expiresAt > now) {
+    return videasySessionCache.value;
+  }
+
+  const browser = await getBrowser();
+  const context = await browser.newContext({
+    bypassCSP: true,
+    viewport: { width: 1280, height: 720 },
+    userAgent: getDefaultUserAgent()
+  });
+  const page = await context.newPage();
+
+  try {
+    await page.goto(targetUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    });
+
+    await page.waitForTimeout(5000).catch(() => undefined);
+
+    const cookies = await context.cookies(['https://player.videasy.net', 'https://api.videasy.net']).catch(() => []);
+    const cookieHeader = cookies
+      .filter((cookie) => !cookie.expires || cookie.expires * 1000 > now)
+      .map((cookie) => `${cookie.name}=${cookie.value}`)
+      .join('; ');
+
+    const session = {
+      userAgent: getDefaultUserAgent(),
+      cookieHeader
+    };
+
+    videasySessionCache = {
+      value: session,
+      expiresAt: now + 10 * 60 * 1000
+    };
+
+    return session;
+  } finally {
+    await context.close().catch(() => undefined);
+  }
+}
+
 export async function decryptVideasyPayload(encryptedPayload, mediaId, targetUrl = 'https://player.videasy.net/') {
   const browser = await getBrowser();
   const context = await browser.newContext({
     bypassCSP: true,
     viewport: { width: 1280, height: 720 },
-    userAgent:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
-      'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-      'Chrome/120.0.0.0 Safari/537.36'
+    userAgent: getDefaultUserAgent()
   });
   const page = await context.newPage();
 
@@ -1213,10 +1263,7 @@ export async function resolveVideasyPayloadInBrowser(apiUrl, mediaId, targetUrl 
   const context = await browser.newContext({
     bypassCSP: true,
     viewport: { width: 1280, height: 720 },
-    userAgent:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
-      'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-      'Chrome/120.0.0.0 Safari/537.36'
+    userAgent: getDefaultUserAgent()
   });
   const page = await context.newPage();
 
