@@ -481,15 +481,6 @@ router.post('/', async (req, res) => {
     }
   }
 
-  if (isVideasyUrl(url)) {
-    const directResult = await tryResolveVideasyDirect(url);
-    if (directResult) {
-      cache.set(cacheKey, directResult, ONE_HOUR_MS);
-      console.log(new Date().toISOString(), '[resolve] videasy direct success', directResult.url);
-      return res.json(directResult);
-    }
-  }
-
   try {
     const result = await new Promise((resolve, reject) => {
       let settled = false;

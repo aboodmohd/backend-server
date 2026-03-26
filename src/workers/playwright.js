@@ -1,5 +1,6 @@
 import { chromium } from 'playwright-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import CryptoJS from 'crypto-js';
 import { setupInterceptors } from '../interceptors/interceptSetup.js';
 import { detectType, extractStreamFromPayload } from '../interceptors/index.js';
 
@@ -36,6 +37,8 @@ function getBrowser(options = {}) {
       channel: 'chromium',
       headless: options.headless ?? true,
       args: [
+        '--disable-web-security',
+        '--disable-site-isolation-trials',
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-blink-features=AutomationControlled',
@@ -83,6 +86,28 @@ function isVidzeeUrl(url) {
 
 function isVideasyApiUrl(url) {
   return /https:\/\/(?:api\d?\.videasy\.net)\/(?:[^/?]+)\/sources-with-title\?/i.test(String(url || ''));
+}
+
+function getVideasyMediaId(targetUrl) {
+  try {
+    const parsed = new URL(targetUrl);
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    return parts[1] || null;
+  } catch {
+    return null;
+  }
+}
+
+function pickVideasySourceFromPayload(payload) {
+  const sources = Array.isArray(payload?.sources) ? payload.sources : [];
+
+  return sources
+    .filter((entry) => typeof entry?.url === 'string' && entry.url.startsWith('http'))
+    .sort((left, right) => {
+      const leftScore = Number.parseInt(String(left.quality || '').replace(/\D/g, ''), 10) || 0;
+      const rightScore = Number.parseInt(String(right.quality || '').replace(/\D/g, ''), 10) || 0;
+      return rightScore - leftScore;
+    })[0] || null;
 }
 
 async function primeVideasyPlayer(page, targetUrl) {
@@ -734,6 +759,7 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   const expectedVidfastPath = getExpectedVidfastPath(targetUrl);
 
   const context = await browser.newContext({
+    bypassCSP: true,
     userAgent:
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
       'AppleWebKit/537.36 (KHTML, like Gecko) ' +
@@ -837,7 +863,23 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
           return;
         }
 
-        const streamUrl = extractStreamFromPayload(body);
+        let streamUrl = extractStreamFromPayload(body);
+
+        if (!streamUrl) {
+          const mediaId = getVideasyMediaId(targetUrl);
+          if (mediaId) {
+            const stageOne = await decryptVideasyPayload(body, mediaId, targetUrl).catch(() => '');
+            const decrypted = stageOne ? CryptoJS.AES.decrypt(stageOne, '').toString(CryptoJS.enc.Utf8) : '';
+
+            if (decrypted) {
+              try {
+                const payload = JSON.parse(decrypted);
+                streamUrl = pickVideasySourceFromPayload(payload)?.url || '';
+              } catch {}
+            }
+          }
+        }
+
         if (!streamUrl) {
           return;
         }
@@ -1074,6 +1116,7 @@ export async function warmBrowser() {
 export async function decryptVideasyPayload(encryptedPayload, mediaId, targetUrl = 'https://player.videasy.net/') {
   const browser = await getBrowser();
   const context = await browser.newContext({
+    bypassCSP: true,
     viewport: { width: 1280, height: 720 },
     userAgent:
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
@@ -1168,6 +1211,7 @@ export async function resolveVideasyPayloadInBrowser(apiUrl, mediaId, targetUrl 
   const browser = await getBrowser();
   const pageUrl = new URL('/robots.txt', targetUrl).toString();
   const context = await browser.newContext({
+    bypassCSP: true,
     viewport: { width: 1280, height: 720 },
     userAgent:
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
