@@ -1166,6 +1166,7 @@ export async function decryptVideasyPayload(encryptedPayload, mediaId, targetUrl
 
 export async function resolveVideasyPayloadInBrowser(apiUrl, mediaId, targetUrl = 'https://player.videasy.net/') {
   const browser = await getBrowser();
+  const pageUrl = new URL('/robots.txt', targetUrl).toString();
   const context = await browser.newContext({
     viewport: { width: 1280, height: 720 },
     userAgent:
@@ -1176,7 +1177,27 @@ export async function resolveVideasyPayloadInBrowser(apiUrl, mediaId, targetUrl 
   const page = await context.newPage();
 
   try {
-    await page.goto(targetUrl, {
+    await context.route('**/*sources-with-title*', async (route) => {
+      try {
+        const response = await route.fetch();
+        const body = await response.text();
+
+        await route.fulfill({
+          response,
+          body,
+          headers: {
+            ...response.headers(),
+            'access-control-allow-origin': '*',
+            'access-control-allow-methods': 'GET, OPTIONS',
+            'access-control-allow-headers': '*'
+          }
+        });
+      } catch {
+        await route.abort().catch(() => undefined);
+      }
+    });
+
+    await page.goto(pageUrl, {
       waitUntil: 'domcontentloaded',
       timeout: 30000
     });
@@ -1243,7 +1264,10 @@ export async function resolveVideasyPayloadInBrowser(apiUrl, mediaId, targetUrl 
         poll();
       });
 
-      const response = await fetch(sourceApiUrl);
+      const response = await fetch(sourceApiUrl, {
+        credentials: 'omit',
+        mode: 'cors'
+      });
       const encrypted = await response.text();
 
       if (!response.ok || !encrypted) {

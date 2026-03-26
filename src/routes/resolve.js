@@ -119,13 +119,10 @@ function buildVideasyResolveParams(details, metadata) {
     title: encodeURIComponent(title),
     mediaType: details.mediaType,
     year,
-    tmdbId: details.tmdbId
+    tmdbId: details.tmdbId,
+    seasonId: details.seasonId || '1',
+    episodeId: details.episodeId || '1'
   });
-
-  if (details.mediaType === 'tv') {
-    params.set('seasonId', details.seasonId);
-    params.set('episodeId', details.episodeId);
-  }
 
   if (imdbId) {
     params.set('imdbId', imdbId);
