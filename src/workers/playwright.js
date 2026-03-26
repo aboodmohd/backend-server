@@ -77,6 +77,10 @@ function isVideasyUrl(url) {
   return /player\.videasy\.net/i.test(String(url || ''));
 }
 
+function isVidzeeUrl(url) {
+  return /player\.vidzee\.wtf\/v2\/embed\//i.test(String(url || ''));
+}
+
 function isVideasyApiUrl(url) {
   return /https:\/\/(?:api\d?\.videasy\.net)\/(?:[^/?]+)\/sources-with-title\?/i.test(String(url || ''));
 }
@@ -87,6 +91,23 @@ async function primeVideasyPlayer(page, targetUrl) {
   }
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
+    if (page.isClosed()) {
+      return;
+    }
+
+    await page.locator('button').first().click({ force: true, timeout: 1000 }).catch(() => undefined);
+    await page.mouse.click(640, 360).catch(() => undefined);
+    await page.keyboard.press('Space').catch(() => undefined);
+    await page.waitForTimeout(1000).catch(() => undefined);
+  }
+}
+
+async function primeVidzeePlayer(page, targetUrl) {
+  if (!isVidzeeUrl(targetUrl)) {
+    return;
+  }
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
     if (page.isClosed()) {
       return;
     }
@@ -207,7 +228,7 @@ async function clickFirstVisible(frame, selectors) {
 }
 
 async function pokePlayers(page, targetUrl) {
-  const isVidfast = isVidfastUrl(targetUrl);
+  const isAggressiveTarget = isVidfastUrl(targetUrl) || isVidzeeUrl(targetUrl);
   const selectors = [
     'button',
     '.play',
@@ -246,10 +267,10 @@ async function pokePlayers(page, targetUrl) {
           clientY: centerY
         }));
       });
-    }, isVidfast).catch(() => undefined);
+    }, isAggressiveTarget).catch(() => undefined);
   }
 
-  if (isVidfast) {
+  if (isAggressiveTarget) {
     await page.keyboard.press('Space').catch(() => undefined);
     await page.keyboard.press('Enter').catch(() => undefined);
   }
@@ -977,6 +998,12 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       if (videasyForbiddenCount >= 3) {
         throw new Error('VIDEASY_UPSTREAM_FORBIDDEN');
       }
+    }
+
+    if (!stopIfResolved() && isVidzeeUrl(targetUrl)) {
+      await safeWait(2500);
+      await primeVidzeePlayer(page, targetUrl);
+      await waitForNetworkSettle(2500, 15000, 3000);
     }
 
     if (!stopIfResolved() && isVidfastUrl(targetUrl)) {

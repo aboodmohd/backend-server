@@ -26,6 +26,17 @@ function isVideasyUrl(url) {
   return /player\.videasy\.net/i.test(String(url || ''));
 }
 
+function isVidzeeUrl(url) {
+  return /player\.vidzee\.wtf\/v2\/embed\//i.test(String(url || ''));
+}
+
+function getProviderKeyFromUrl(url) {
+  if (isVidfastUrl(url)) return 'vidfast';
+  if (isVideasyUrl(url)) return 'videasy';
+  if (isVidzeeUrl(url)) return 'vidzee';
+  return null;
+}
+
 async function tryResolveVidfastFromHints(sourceUrl) {
   const hintEntry = vidfastHintCache.get(`vidfast:${sourceUrl}`);
   const requests = hintEntry?.vidfastRequests || [];
@@ -63,7 +74,7 @@ async function tryResolveVidfastFromHints(sourceUrl) {
             stream: match[0],
             type: 'HLS',
             headers: normalizeHeaders(request.headers || {}),
-            provider: 'vidfast-direct',
+            provider: 'vidfast',
             sourceUrl,
             qualities: []
           };
@@ -77,7 +88,7 @@ async function tryResolveVidfastFromHints(sourceUrl) {
           stream: request.url,
           type: /dash\+xml/i.test(contentType) ? 'DASH' : 'HLS',
           headers: normalizeHeaders(request.headers || {}),
-          provider: 'vidfast-direct',
+          provider: 'vidfast',
           sourceUrl,
           qualities: []
         };
@@ -122,7 +133,7 @@ router.post('/', async (req, res) => {
         if (settled) return;
         settled = true;
         reject(new Error('STREAM_NOT_FOUND'));
-      }, isVidfastUrl(url) ? 75000 : isVideasyUrl(url) ? 18000 : RESOLVE_TIMEOUT_MS);
+      }, isVidfastUrl(url) ? 75000 : isVidzeeUrl(url) ? 24000 : isVideasyUrl(url) ? 18000 : RESOLVE_TIMEOUT_MS);
 
       extractVideoUrls(
         url,
@@ -141,7 +152,7 @@ router.post('/', async (req, res) => {
             stream: found.url,
             type: found.type,
             headers: normalizeHeaders(found.headers || {}),
-            provider: null,
+            provider: getProviderKeyFromUrl(url),
             sourceUrl: url,
             qualities: []
           };
@@ -154,6 +165,8 @@ router.post('/', async (req, res) => {
         },
         isVidfastUrl(url)
           ? { settleTimeout: 3000, navigationTimeout: 45000, minWaitAfterLoad: 4000, maxWaitAfterLoad: 18000 }
+          : isVidzeeUrl(url)
+          ? { settleTimeout: 2500, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 15000 }
           : isVideasyUrl(url)
           ? { settleTimeout: 2000, navigationTimeout: 30000, minWaitAfterLoad: 6000, maxWaitAfterLoad: 12000 }
           : { settleTimeout: 2000, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 10000 }
