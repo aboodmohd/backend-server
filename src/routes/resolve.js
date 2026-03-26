@@ -40,10 +40,15 @@ function isVidzeeUrl(url) {
   return /player\.vidzee\.wtf\/v2\/embed\//i.test(String(url || ''));
 }
 
+function isVidkingUrl(url) {
+  return /www\.vidking\.net\/embed\//i.test(String(url || ''));
+}
+
 function getProviderKeyFromUrl(url) {
   if (isVidfastUrl(url)) return 'vidfast';
   if (isVideasyUrl(url)) return 'videasy';
   if (isVidzeeUrl(url)) return 'vidzee';
+  if (isVidkingUrl(url)) return 'vidking';
   return null;
 }
 
@@ -522,7 +527,7 @@ router.post('/', async (req, res) => {
         if (settled) return;
         settled = true;
         reject(new Error('STREAM_NOT_FOUND'));
-      }, isVidfastUrl(url) ? 75000 : isVidzeeUrl(url) ? 24000 : isVideasyUrl(url) ? 18000 : RESOLVE_TIMEOUT_MS);
+      }, isVidfastUrl(url) ? 75000 : isVidkingUrl(url) ? 30000 : isVidzeeUrl(url) ? 24000 : isVideasyUrl(url) ? 18000 : RESOLVE_TIMEOUT_MS);
 
       extractVideoUrls(
         url,
@@ -554,6 +559,8 @@ router.post('/', async (req, res) => {
         },
         isVidfastUrl(url)
           ? { settleTimeout: 3000, navigationTimeout: 45000, minWaitAfterLoad: 4000, maxWaitAfterLoad: 18000 }
+          : isVidkingUrl(url)
+          ? { settleTimeout: 2500, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 14000 }
           : isVidzeeUrl(url)
           ? { settleTimeout: 2500, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 15000 }
           : isVideasyUrl(url)
