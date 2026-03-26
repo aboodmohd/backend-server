@@ -86,6 +86,10 @@ function isVidzeeUrl(url) {
   return /player\.vidzee\.wtf\/v2\/embed\//i.test(String(url || ''));
 }
 
+function isVidkingUrl(url) {
+  return /www\.vidking\.net\/embed\//i.test(String(url || ''));
+}
+
 function isVideasyApiUrl(url) {
   return /https:\/\/(?:api\d?\.videasy\.net)\/(?:[^/?]+)\/sources-with-title\?/i.test(String(url || ''));
 }
@@ -827,6 +831,18 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     }
   };
 
+  const emitFound = async (result) => {
+    onFound({
+      ...result,
+      resolverHints: vidfastResolverHints.length ? { vidfastRequests: [...vidfastResolverHints] } : undefined
+    });
+
+    if (!firstResultResolved) {
+      firstResultResolved = true;
+      await page.close().catch(() => undefined);
+    }
+  };
+
   const waitForNetworkSettle = async (quietWindowMs, maxWaitMs, minWaitMs = 0) => {
     const startedAt = Date.now();
 
@@ -843,13 +859,30 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   };
 
   page.on('request', (request) => {
-    markActivity(request.url(), request.resourceType());
+    const requestUrl = request.url();
+    const resourceType = request.resourceType();
+    markActivity(requestUrl, resourceType);
 
     rememberVidfastResolverHint({
-      url: request.url(),
+      url: requestUrl,
       method: request.method(),
       headers: request.headers()
     });
+
+    if (!isVidkingUrl(targetUrl) || stopIfResolved()) {
+      return;
+    }
+
+    if (isLikelyStreamUrl(requestUrl)) {
+      console.log(new Date().toISOString(), '[vidking:request-media]', resourceType, requestUrl);
+      emitFound({
+        url: requestUrl,
+        type: detectType(requestUrl, request.headers()['content-type'] || ''),
+        headers: request.headers(),
+        foundAt: new Date().toISOString(),
+        via: 'vidking-request'
+      }).catch(() => undefined);
+    }
   });
 
   page.on('response', (response) => {
@@ -857,6 +890,24 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   });
 
   page.on('response', async (response) => {
+    if (isVidkingUrl(targetUrl)) {
+      const responseUrl = response.url();
+      if (isLikelyStreamUrl(responseUrl) && !stopIfResolved()) {
+        console.log(new Date().toISOString(), '[vidking:response-media]', response.status(), responseUrl);
+        await emitFound({
+          url: responseUrl,
+          type: detectType(responseUrl, response.headers()['content-type'] || ''),
+          headers: {
+            ...response.request().headers(),
+            ...response.headers()
+          },
+          foundAt: new Date().toISOString(),
+          via: 'vidking-response'
+        }).catch(() => undefined);
+        return;
+      }
+    }
+
     if (isVideasyUrl(targetUrl) && isVideasyApiUrl(response.url())) {
       const url = response.url();
       const status = response.status();
@@ -981,22 +1032,14 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   await installVidfastHooks(page, targetUrl);
 
   await setupInterceptors(page, targetUrl, async (result) => {
-    onFound({
-      ...result,
-      resolverHints: vidfastResolverHints.length ? { vidfastRequests: [...vidfastResolverHints] } : undefined
-    });
-
-    if (!firstResultResolved) {
-      firstResultResolved = true;
-      await page.close().catch(() => undefined);
-    }
+    await emitFound(result);
   });
 
   try {
     await warmVidfastSession(page, targetUrl);
 
     await page.goto(targetUrl, {
-      waitUntil: 'domcontentloaded',
+      waitUntil: isVidkingUrl(targetUrl) ? 'networkidle' : 'domcontentloaded',
       timeout: options.navigationTimeout ?? 30000
     });
 
@@ -1021,6 +1064,10 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     }
 
     await safeWait(isVidfastUrl(targetUrl) ? 2000 : 250);
+
+    if (!stopIfResolved() && isVidkingUrl(targetUrl)) {
+      await safeWait(3000);
+    }
 
     if (stopIfResolved()) {
       return;
