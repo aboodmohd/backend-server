@@ -8,6 +8,7 @@ chromium.use(StealthPlugin());
 
 let browserPromise;
 let videasySessionCache = null;
+let vidkingSessionCache = null;
 
 const STREAM_URL_PATTERNS = [
   /\.m3u8(\?|$)/i,
@@ -1166,6 +1167,50 @@ export async function getVideasySession(targetUrl = 'https://player.videasy.net/
   }
 }
 
+export async function getVidkingSession(targetUrl = 'https://www.vidking.net/') {
+  const now = Date.now();
+  if (vidkingSessionCache && vidkingSessionCache.expiresAt > now) {
+    return vidkingSessionCache.value;
+  }
+
+  const browser = await getBrowser();
+  const context = await browser.newContext({
+    bypassCSP: true,
+    viewport: { width: 1280, height: 720 },
+    userAgent: getDefaultUserAgent()
+  });
+  const page = await context.newPage();
+
+  try {
+    await page.goto(targetUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    });
+
+    await page.waitForTimeout(7000).catch(() => undefined);
+
+    const cookies = await context.cookies(['https://www.vidking.net', 'https://api.videasy.net']).catch(() => []);
+    const cookieHeader = cookies
+      .filter((cookie) => !cookie.expires || cookie.expires * 1000 > now)
+      .map((cookie) => `${cookie.name}=${cookie.value}`)
+      .join('; ');
+
+    const session = {
+      userAgent: getDefaultUserAgent(),
+      cookieHeader
+    };
+
+    vidkingSessionCache = {
+      value: session,
+      expiresAt: now + 10 * 60 * 1000
+    };
+
+    return session;
+  } finally {
+    await context.close().catch(() => undefined);
+  }
+}
+
 export async function decryptVideasyPayload(encryptedPayload, mediaId, targetUrl = 'https://player.videasy.net/') {
   const browser = await getBrowser();
   const context = await browser.newContext({
@@ -1372,6 +1417,88 @@ export async function resolveVideasyPayloadInBrowser(apiUrl, mediaId, targetUrl 
       return readString(exports.decrypt(writeString(encrypted), numericMediaId) >>> 0) || '';
     }, {
       sourceApiUrl: String(apiUrl || ''),
+      numericMediaId: Number(mediaId)
+    });
+  } finally {
+    await context.close().catch(() => undefined);
+  }
+}
+
+export async function decryptVidkingPayload(encryptedPayload, mediaId, targetUrl = 'https://www.vidking.net/') {
+  const browser = await getBrowser();
+  const context = await browser.newContext({
+    bypassCSP: true,
+    viewport: { width: 1280, height: 720 },
+    userAgent: getDefaultUserAgent()
+  });
+  const page = await context.newPage();
+
+  try {
+    await page.goto(targetUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    });
+
+    await page.waitForTimeout(3000).catch(() => undefined);
+
+    return await page.evaluate(async ({ encrypted, numericMediaId }) => {
+      const compiled = await WebAssembly.compileStreaming(fetch('https://www.vidking.net/assets/wasm/module1.wasm'));
+      const { exports } = await WebAssembly.instantiate(compiled, {
+        env: Object.assign(Object.create(globalThis), {
+          seed: () => Date.now() * Math.random(),
+          abort(message, file, line, column) {
+            throw new Error(`${message}:${file}:${line}:${column}`);
+          }
+        })
+      });
+      const memory = exports.memory;
+
+      const readString = (ptr) => {
+        if (!ptr) return null;
+        const end = ptr + new Uint32Array(memory.buffer)[(ptr - 4) >>> 2] >>> 1;
+        const buffer = new Uint16Array(memory.buffer);
+        let cursor = ptr >>> 1;
+        let output = '';
+        while (end - cursor > 1024) {
+          output += String.fromCharCode(...buffer.subarray(cursor, cursor += 1024));
+        }
+        return output + String.fromCharCode(...buffer.subarray(cursor, end));
+      };
+
+      const writeString = (value) => {
+        const ptr = exports.__new(value.length << 1, 2) >>> 0;
+        const buffer = new Uint16Array(memory.buffer);
+        for (let index = 0; index < value.length; index += 1) {
+          buffer[(ptr >>> 1) + index] = value.charCodeAt(index);
+        }
+        return ptr;
+      };
+
+      Function(readString(exports.serve() >>> 0))();
+
+      const hash = await new Promise((resolve, reject) => {
+        const startedAt = Date.now();
+        const poll = () => {
+          if (window.hash) {
+            resolve(window.hash);
+            return;
+          }
+          if (Date.now() - startedAt > 10000) {
+            reject(new Error('VIDKING_HASH_TIMEOUT'));
+            return;
+          }
+          setTimeout(poll, 25);
+        };
+        poll();
+      });
+
+      if (!exports.verify(writeString(hash))) {
+        throw new Error('VIDKING_HASH_VERIFY_FAILED');
+      }
+
+      return readString(exports.decrypt(writeString(encrypted), numericMediaId) >>> 0) || '';
+    }, {
+      encrypted: String(encryptedPayload || ''),
       numericMediaId: Number(mediaId)
     });
   } finally {

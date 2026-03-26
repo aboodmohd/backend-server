@@ -4,7 +4,7 @@ import CryptoJS from 'crypto-js';
 import { ProxyAgent } from 'undici';
 import { detectType } from '../interceptors/index.js';
 import { createCacheStore } from '../store/results.js';
-import { decryptVideasyPayload, extractVideoUrls, getVideasySession, resolveVideasyPayloadInBrowser } from '../workers/playwright.js';
+import { decryptVideasyPayload, decryptVidkingPayload, extractVideoUrls, getVideasySession, getVidkingSession, resolveVideasyPayloadInBrowser } from '../workers/playwright.js';
 
 const router = Router();
 const cache = createCacheStore();
@@ -97,6 +97,28 @@ function parseVideasySourceUrl(sourceUrl) {
         seasonId: parts[2],
         episodeId: parts[3]
       };
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function parseVidkingSourceUrl(sourceUrl) {
+  try {
+    const parsed = new URL(sourceUrl);
+    if (parsed.hostname !== 'www.vidking.net') {
+      return null;
+    }
+
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    if (parts[0] === 'embed' && parts[1] === 'movie' && parts[2]) {
+      return { mediaType: 'movie', tmdbId: parts[2] };
+    }
+
+    if (parts[0] === 'embed' && parts[1] === 'tv' && parts[2] && parts[3] && parts[4]) {
+      return { mediaType: 'tv', tmdbId: parts[2], seasonId: parts[3], episodeId: parts[4] };
     }
   } catch {
     return null;
@@ -294,6 +316,111 @@ async function tryResolveVideasyDirect(sourceUrl) {
     }
   } catch (error) {
     console.log(new Date().toISOString(), '[videasy] direct resolve failed', sourceUrl, error?.message || String(error));
+  }
+
+  return null;
+}
+
+async function tryResolveVidkingDirect(sourceUrl) {
+  const details = parseVidkingSourceUrl(sourceUrl);
+  if (!details) {
+    return null;
+  }
+
+  try {
+    const vidkingSession = await getVidkingSession(sourceUrl).catch(() => null);
+    const metadataResponse = await fetch(getVideasyMetadataUrl(details), {
+      headers: {
+        accept: 'application/json, text/plain, */*',
+        'accept-language': 'en-US,en;q=0.9',
+        referer: sourceUrl,
+        origin: 'https://www.vidking.net'
+      }
+    });
+
+    if (!metadataResponse.ok) {
+      return null;
+    }
+
+    const metadata = await metadataResponse.json();
+    const params = buildVideasyResolveParams(details, metadata);
+    if (!params) {
+      return null;
+    }
+
+    const candidates = [
+      'https://api.videasy.net/myflixerzupcloud/sources-with-title',
+      'https://api.videasy.net/cdn/sources-with-title',
+      'https://api.videasy.net/moviebox/sources-with-title',
+      'https://api.videasy.net/1movies/sources-with-title',
+      'https://api.videasy.net/primesrcme/sources-with-title'
+    ];
+
+    for (const candidateBase of candidates) {
+      const apiUrl = new URL(candidateBase);
+      for (const [key, value] of params.entries()) {
+        apiUrl.searchParams.append(key, value);
+      }
+      apiUrl.searchParams.set('_t', String(Date.now()));
+
+      try {
+        const upstream = await fetchVideasyUrl(apiUrl, {
+          headers: {
+            accept: 'application/json, text/plain, */*',
+            'accept-language': 'en-US,en;q=0.9',
+            origin: 'https://www.vidking.net',
+            referer: sourceUrl,
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            Pragma: 'no-cache',
+            Expires: '0'
+          }
+        }, vidkingSession);
+
+        if (!upstream.ok) {
+          continue;
+        }
+
+        const encryptedBody = await upstream.text();
+        if (!encryptedBody) {
+          continue;
+        }
+
+        const stageOne = await decryptVidkingPayload(encryptedBody, details.tmdbId, sourceUrl);
+        if (!stageOne) {
+          continue;
+        }
+
+        const decrypted = CryptoJS.AES.decrypt(stageOne, '').toString(CryptoJS.enc.Utf8);
+        if (!decrypted) {
+          continue;
+        }
+
+        const payload = JSON.parse(decrypted);
+        const selectedSource = pickVideasySource(payload);
+        if (!selectedSource?.url) {
+          continue;
+        }
+
+        return {
+          success: true,
+          url: selectedSource.url,
+          stream: selectedSource.url,
+          type: detectType(selectedSource.url),
+          headers: normalizeHeaders({
+            origin: 'https://www.vidking.net',
+            referer: sourceUrl,
+            'user-agent': vidkingSession?.userAgent || 'Mozilla/5.0'
+          }),
+          provider: 'vidking',
+          sourceUrl,
+          qualities: []
+        };
+      } catch {
+        // Try the next candidate.
+      }
+    }
+  } catch {
+    return null;
   }
 
   return null;
@@ -516,6 +643,15 @@ router.post('/', async (req, res) => {
     if (directResult) {
       cache.set(cacheKey, directResult, ONE_HOUR_MS);
       console.log(new Date().toISOString(), '[resolve] videasy direct success', directResult.url);
+      return res.json(directResult);
+    }
+  }
+
+  if (isVidkingUrl(url)) {
+    const directResult = await tryResolveVidkingDirect(url);
+    if (directResult) {
+      cache.set(cacheKey, directResult, ONE_HOUR_MS);
+      console.log(new Date().toISOString(), '[resolve] vidking direct success', directResult.url);
       return res.json(directResult);
     }
   }
