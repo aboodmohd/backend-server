@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { createDecipheriv, createHash } from 'node:crypto';
 import CryptoJS from 'crypto-js';
+import { ProxyAgent } from 'undici';
 import { detectType } from '../interceptors/index.js';
 import { createCacheStore } from '../store/results.js';
 import { decryptVideasyPayload, extractVideoUrls, resolveVideasyPayloadInBrowser } from '../workers/playwright.js';
@@ -15,6 +16,8 @@ const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 const RESOLVE_TIMEOUT_MS = Number(process.env.RESOLVE_TIMEOUT_MS || 30000);
 const VIDZEE_KEY_SECRET = '7c9e2b4a1f6d8a3e5';
 const VIDZEE_SERVER_IDS = ['0', '1', '2', '3', '7', '6', '8', '9', '10', '11', '12'];
+const videasyProxyUrl = process.env.VIDEASY_PROXY_URL || process.env.RESIDENTIAL_PROXY_URL || '';
+const videasyProxyAgent = videasyProxyUrl ? new ProxyAgent(videasyProxyUrl) : null;
 
 function normalizeHeaders(headers = {}) {
   return Object.entries(headers).reduce((acc, [key, value]) => {
@@ -164,6 +167,10 @@ function pickVideasySource(payload) {
   return ranked[0] || null;
 }
 
+async function fetchVideasyUrl(url, options = {}) {
+  return fetch(url, videasyProxyAgent ? { ...options, dispatcher: videasyProxyAgent } : options);
+}
+
 async function tryResolveVideasyDirect(sourceUrl) {
   const details = parseVideasySourceUrl(sourceUrl);
   if (!details) {
@@ -194,14 +201,14 @@ async function tryResolveVideasyDirect(sourceUrl) {
 
     let userIp = '';
     try {
-      userIp = (await fetch('https://api4.ipify.org').then((response) => response.text())).trim();
+      userIp = (await fetchVideasyUrl('https://api4.ipify.org').then((response) => response.text())).trim();
     } catch {
       userIp = '';
     }
 
     for (const apiUrl of buildVideasyApiCandidates(details, params, userIp)) {
       try {
-        const upstream = await fetch(apiUrl, {
+        const upstream = await fetchVideasyUrl(apiUrl, {
           headers: {
             accept: 'application/json, text/plain, */*',
             'accept-language': 'en-US,en;q=0.9',
@@ -477,6 +484,15 @@ router.post('/', async (req, res) => {
     if (directResult) {
       cache.set(cacheKey, directResult, ONE_HOUR_MS);
       console.log(new Date().toISOString(), '[resolve] vidzee direct success', directResult.url);
+      return res.json(directResult);
+    }
+  }
+
+  if (isVideasyUrl(url)) {
+    const directResult = await tryResolveVideasyDirect(url);
+    if (directResult) {
+      cache.set(cacheKey, directResult, ONE_HOUR_MS);
+      console.log(new Date().toISOString(), '[resolve] videasy direct success', directResult.url);
       return res.json(directResult);
     }
   }
