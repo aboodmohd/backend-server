@@ -128,6 +128,25 @@ function buildAbsolutePlaylistUrl(playlistUrl, candidatePath) {
   return resolved.toString();
 }
 
+function buildFallbackMasterPlaylistUrls(playlistUrl) {
+  const parsed = new URL(playlistUrl);
+  const pathname = parsed.pathname || '';
+  if (!/\.m3u8$/i.test(pathname)) {
+    return [];
+  }
+
+  const fileName = pathname.split('/').pop() || '';
+  const commonNames = ['master.m3u8', 'index.m3u8', 'video.m3u8'];
+
+  return commonNames
+    .filter((name) => name.toLowerCase() !== fileName.toLowerCase())
+    .map((name) => {
+      const nextUrl = new URL(playlistUrl);
+      nextUrl.pathname = pathname.replace(/[^/]+$/, name);
+      return nextUrl.toString();
+    });
+}
+
 function parseVariantAttributes(line) {
   return line
     .replace(/^#EXT-X-STREAM-INF:/i, '')
@@ -168,19 +187,28 @@ async function fetchPlaylistQualities(playlistUrl, headers = {}) {
     return [];
   }
 
-  const { signal, done } = withTimeout();
+  async function fetchPlaylistBody(url) {
+    const { signal, done } = withTimeout();
 
-  try {
-    const response = await fetch(playlistUrl, {
-      headers,
-      signal
-    });
+    try {
+      const response = await fetch(url, {
+        headers,
+        signal
+      });
 
-    if (!response.ok) {
-      return [];
+      if (!response.ok) {
+        return null;
+      }
+
+      return await response.text();
+    } catch {
+      return null;
+    } finally {
+      done();
     }
+  }
 
-    const body = await response.text();
+  function parseMasterPlaylist(body, baseUrl) {
     if (!/#EXTM3U/i.test(body) || !/#EXT-X-STREAM-INF/i.test(body)) {
       return [];
     }
@@ -208,7 +236,7 @@ async function fetchPlaylistQualities(playlistUrl, headers = {}) {
       variants.push({
         label,
         quality: label,
-        url: buildAbsolutePlaylistUrl(playlistUrl, nextLine),
+        url: buildAbsolutePlaylistUrl(baseUrl, nextLine),
         type: 'HLS',
         bandwidth: attributes.BANDWIDTH || '',
         resolution: attributes.RESOLUTION || '',
@@ -217,11 +245,39 @@ async function fetchPlaylistQualities(playlistUrl, headers = {}) {
     }
 
     return dedupeQualities(variants);
-  } catch {
-    return [];
-  } finally {
-    done();
   }
+
+  const primaryBody = await fetchPlaylistBody(playlistUrl);
+  if (!primaryBody) {
+    return [];
+  }
+
+  const primaryVariants = parseMasterPlaylist(primaryBody, playlistUrl);
+  if (primaryVariants.length) {
+    return primaryVariants;
+  }
+
+  const fallbackUrls = buildFallbackMasterPlaylistUrls(playlistUrl);
+  for (const fallbackUrl of fallbackUrls) {
+    const fallbackBody = await fetchPlaylistBody(fallbackUrl);
+    if (!fallbackBody) {
+      continue;
+    }
+
+    const fallbackVariants = parseMasterPlaylist(fallbackBody, fallbackUrl);
+    if (fallbackVariants.length) {
+      console.log(new Date().toISOString(), '[resolve] master playlist fallback', fallbackUrl);
+      return fallbackVariants;
+    }
+  }
+
+  return [{
+    label: 'auto',
+    quality: 'auto',
+    url: playlistUrl,
+    type: 'HLS',
+    isDefault: false
+  }];
 }
 
 async function attachQualities(result, sourceCandidates = []) {
@@ -237,14 +293,22 @@ async function attachQualities(result, sourceCandidates = []) {
   const qualities = dedupeQualities([
     ...playlistQualities,
     ...sourceQualities
-  ]).map((entry, index) => ({
+  ]);
+
+  const normalizedQualities = (qualities.length ? qualities : [{
+    label: 'auto',
+    quality: 'auto',
+    url: result.url,
+    type: result.type || detectType(result.url),
+    isDefault: false
+  }]).map((entry, index) => ({
     ...entry,
     isDefault: index === 0
   }));
 
   return {
     ...result,
-    qualities
+    qualities: normalizedQualities
   };
 }
 
