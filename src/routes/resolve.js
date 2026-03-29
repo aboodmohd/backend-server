@@ -30,6 +30,19 @@ function normalizeHeaders(headers = {}) {
   }, {});
 }
 
+function logResolvedQualities(label, qualities = []) {
+  if (!Array.isArray(qualities) || !qualities.length) {
+    console.log(new Date().toISOString(), label, 'none');
+    return;
+  }
+
+  console.log(
+    new Date().toISOString(),
+    label,
+    qualities.map((entry) => entry?.label || entry?.quality || 'unknown').join(', ')
+  );
+}
+
 function normalizeQualityLabel(value) {
   const text = String(value || '').trim();
   if (!text) {
@@ -915,6 +928,7 @@ router.post('/', async (req, res) => {
   const cached = cache.get(cacheKey);
   if (cached) {
     console.log(new Date().toISOString(), '[resolve] cache hit', url);
+    logResolvedQualities('[resolve] qualities', cached.qualities);
     return res.json({ ...cached, cached: true });
   }
 
@@ -936,6 +950,7 @@ router.post('/', async (req, res) => {
 
   try {
     const result = await inflight;
+    logResolvedQualities('[resolve] qualities', result.qualities);
     console.log(new Date().toISOString(), '[resolve] success', result.url);
     return res.json(result);
   } catch (error) {
