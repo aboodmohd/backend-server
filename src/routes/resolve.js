@@ -1000,7 +1000,7 @@ router.post('/', async (req, res) => {
   if (!inflight) {
     inflight = resolveStream(url)
       .then((result) => {
-        cache.set(cacheKey, result, ONE_HOUR_MS);
+        cache.set(cacheKey, result, ONE_DAY_MS);
         return result;
       })
       .finally(() => {
