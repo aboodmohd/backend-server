@@ -10,10 +10,12 @@ const router = Router();
 const cache = createCacheStore();
 const vidfastHintCache = createCacheStore();
 const vidzeeKeyCache = createCacheStore();
+const inflightResolutions = new Map();
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const SIX_HOURS_MS = 6 * ONE_HOUR_MS;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 const RESOLVE_TIMEOUT_MS = Number(process.env.RESOLVE_TIMEOUT_MS || 30000);
+const PLAYLIST_FETCH_TIMEOUT_MS = Number(process.env.PLAYLIST_FETCH_TIMEOUT_MS || 8000);
 const VIDZEE_KEY_SECRET = '7c9e2b4a1f6d8a3e5';
 const VIDZEE_SERVER_IDS = ['0', '1', '2', '3', '7', '6', '8', '9', '10', '11', '12'];
 const videasyProxyUrl = process.env.VIDEASY_PROXY_URL || process.env.RESIDENTIAL_PROXY_URL || '';
@@ -26,6 +28,211 @@ function normalizeHeaders(headers = {}) {
     }
     return acc;
   }, {});
+}
+
+function normalizeQualityLabel(value) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return '';
+  }
+
+  const numberMatch = text.match(/(\d{3,4})/);
+  if (numberMatch?.[1]) {
+    return `${numberMatch[1]}p`;
+  }
+
+  if (/auto/i.test(text)) {
+    return 'auto';
+  }
+
+  return text;
+}
+
+function getQualityRank(label) {
+  if (String(label || '').toLowerCase() === 'auto') {
+    return Number.MAX_SAFE_INTEGER;
+  }
+
+  return Number.parseInt(String(label || '').replace(/\D/g, ''), 10) || 0;
+}
+
+function sortQualities(qualities = []) {
+  return [...qualities].sort((left, right) => getQualityRank(right.label) - getQualityRank(left.label));
+}
+
+function dedupeQualities(qualities = []) {
+  const seen = new Set();
+
+  return sortQualities(qualities).filter((entry) => {
+    if (!entry?.url) {
+      return false;
+    }
+
+    const key = `${String(entry.label || '').toLowerCase()}::${entry.url}`;
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
+function withTimeout(signalTimeoutMs = PLAYLIST_FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), signalTimeoutMs);
+  return {
+    signal: controller.signal,
+    done: () => clearTimeout(timer)
+  };
+}
+
+function buildQualityEntriesFromSources(sources = []) {
+  return dedupeQualities(
+    sources
+      .filter((entry) => typeof entry?.url === 'string' && entry.url.startsWith('http'))
+      .map((entry) => ({
+        label: normalizeQualityLabel(entry.quality || entry.label || entry.name || entry.resolution),
+        quality: normalizeQualityLabel(entry.quality || entry.label || entry.name || entry.resolution),
+        url: entry.url,
+        type: detectType(entry.url),
+        isDefault: false
+      }))
+      .filter((entry) => entry.label)
+  );
+}
+
+function buildAbsolutePlaylistUrl(playlistUrl, candidatePath) {
+  const resolved = new URL(candidatePath, playlistUrl);
+  const base = new URL(playlistUrl);
+
+  for (const key of ['headers', 'host']) {
+    if (!resolved.searchParams.has(key) && base.searchParams.has(key)) {
+      resolved.searchParams.set(key, base.searchParams.get(key));
+    }
+  }
+
+  return resolved.toString();
+}
+
+function parseVariantAttributes(line) {
+  return line
+    .replace(/^#EXT-X-STREAM-INF:/i, '')
+    .split(',')
+    .reduce((acc, part) => {
+      const [rawKey, ...rawValueParts] = part.split('=');
+      const key = String(rawKey || '').trim().toUpperCase();
+      const value = rawValueParts.join('=').trim().replace(/^"|"$/g, '');
+
+      if (key) {
+        acc[key] = value;
+      }
+
+      return acc;
+    }, {});
+}
+
+function deriveQualityLabelFromVariant(attributes = {}) {
+  const resolution = String(attributes.RESOLUTION || '').trim();
+  const height = resolution.split('x')[1];
+  if (height) {
+    return normalizeQualityLabel(height);
+  }
+
+  const bandwidth = Number.parseInt(String(attributes.BANDWIDTH || '').replace(/\D/g, ''), 10);
+  if (bandwidth >= 7_500_000) return '2160p';
+  if (bandwidth >= 4_500_000) return '1440p';
+  if (bandwidth >= 2_500_000) return '1080p';
+  if (bandwidth >= 1_400_000) return '720p';
+  if (bandwidth >= 800_000) return '480p';
+  if (bandwidth >= 400_000) return '360p';
+  if (bandwidth > 0) return '240p';
+  return '';
+}
+
+async function fetchPlaylistQualities(playlistUrl, headers = {}) {
+  if (!/\.m3u8(\?|$)/i.test(String(playlistUrl || ''))) {
+    return [];
+  }
+
+  const { signal, done } = withTimeout();
+
+  try {
+    const response = await fetch(playlistUrl, {
+      headers,
+      signal
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const body = await response.text();
+    if (!/#EXTM3U/i.test(body) || !/#EXT-X-STREAM-INF/i.test(body)) {
+      return [];
+    }
+
+    const lines = body.split(/\r?\n/);
+    const variants = [];
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]?.trim();
+      if (!line || !line.startsWith('#EXT-X-STREAM-INF')) {
+        continue;
+      }
+
+      const nextLine = lines[index + 1]?.trim();
+      if (!nextLine || nextLine.startsWith('#')) {
+        continue;
+      }
+
+      const attributes = parseVariantAttributes(line);
+      const label = deriveQualityLabelFromVariant(attributes);
+      if (!label) {
+        continue;
+      }
+
+      variants.push({
+        label,
+        quality: label,
+        url: buildAbsolutePlaylistUrl(playlistUrl, nextLine),
+        type: 'HLS',
+        bandwidth: attributes.BANDWIDTH || '',
+        resolution: attributes.RESOLUTION || '',
+        isDefault: false
+      });
+    }
+
+    return dedupeQualities(variants);
+  } catch {
+    return [];
+  } finally {
+    done();
+  }
+}
+
+async function attachQualities(result, sourceCandidates = []) {
+  if (!result?.url) {
+    return result;
+  }
+
+  const sourceQualities = buildQualityEntriesFromSources(sourceCandidates);
+  const playlistQualities = sourceQualities.length
+    ? []
+    : await fetchPlaylistQualities(result.url, result.headers || {});
+
+  const qualities = dedupeQualities([
+    ...playlistQualities,
+    ...sourceQualities
+  ]).map((entry, index) => ({
+    ...entry,
+    isDefault: index === 0
+  }));
+
+  return {
+    ...result,
+    qualities
+  };
 }
 
 function isVidfastUrl(url) {
@@ -293,7 +500,7 @@ async function tryResolveVideasyDirect(sourceUrl) {
           continue;
         }
 
-        return {
+        return attachQualities({
           success: true,
           url: selectedSource.url,
           stream: selectedSource.url,
@@ -309,7 +516,7 @@ async function tryResolveVideasyDirect(sourceUrl) {
           provider: 'videasy',
           sourceUrl,
           qualities: []
-        };
+        }, payload?.sources || []);
       } catch (error) {
         console.log(new Date().toISOString(), '[videasy] direct api failed', apiUrl, error?.message || String(error));
       }
@@ -401,7 +608,7 @@ async function tryResolveVidkingDirect(sourceUrl) {
           continue;
         }
 
-        return {
+        return attachQualities({
           success: true,
           url: selectedSource.url,
           stream: selectedSource.url,
@@ -414,7 +621,7 @@ async function tryResolveVidkingDirect(sourceUrl) {
           provider: 'vidking',
           sourceUrl,
           qualities: []
-        };
+        }, payload?.sources || []);
       } catch {
         // Try the next candidate.
       }
@@ -517,7 +724,7 @@ async function tryResolveVidzeeDirect(sourceUrl) {
           continue;
         }
 
-        return {
+        return attachQualities({
           success: true,
           url: streamUrl,
           stream: streamUrl,
@@ -530,7 +737,7 @@ async function tryResolveVidzeeDirect(sourceUrl) {
           provider: 'vidzee',
           sourceUrl,
           qualities: []
-        };
+        }, payload?.url || []);
       }
     } catch {
       // Try the next VidZee server.
@@ -571,7 +778,7 @@ async function tryResolveVidfastFromHints(sourceUrl) {
       if (/https?:\/\/[^\s"']+\.m3u8/i.test(body)) {
         const match = body.match(/https?:\/\/[^\s"']+\.m3u8[^\s"']*/i);
         if (match?.[0]) {
-          return {
+          return attachQualities({
             success: true,
             url: match[0],
             stream: match[0],
@@ -580,12 +787,12 @@ async function tryResolveVidfastFromHints(sourceUrl) {
             provider: 'vidfast',
             sourceUrl,
             qualities: []
-          };
+          });
         }
       }
 
       if (/mpegurl|dash\+xml|video\//i.test(contentType)) {
-        return {
+        return attachQualities({
           success: true,
           url: request.url,
           stream: request.url,
@@ -594,7 +801,7 @@ async function tryResolveVidfastFromHints(sourceUrl) {
           provider: 'vidfast',
           sourceUrl,
           qualities: []
-        };
+        });
       }
     } catch {
       // fall through to browser extraction
@@ -602,6 +809,97 @@ async function tryResolveVidfastFromHints(sourceUrl) {
   }
 
   return null;
+}
+
+async function resolveStream(url) {
+  if (isVidfastUrl(url)) {
+    const directResult = await tryResolveVidfastFromHints(url);
+    if (directResult) {
+      console.log(new Date().toISOString(), '[resolve] vidfast direct cache hit', directResult.url);
+      return directResult;
+    }
+  }
+
+  if (isVidzeeUrl(url)) {
+    const directResult = await tryResolveVidzeeDirect(url).catch(() => null);
+    if (directResult) {
+      console.log(new Date().toISOString(), '[resolve] vidzee direct success', directResult.url);
+      return directResult;
+    }
+  }
+
+  if (isVideasyUrl(url)) {
+    const directResult = await tryResolveVideasyDirect(url);
+    if (directResult) {
+      console.log(new Date().toISOString(), '[resolve] videasy direct success', directResult.url);
+      return directResult;
+    }
+  }
+
+  if (isVidkingUrl(url)) {
+    const directResult = await tryResolveVidkingDirect(url);
+    if (directResult) {
+      console.log(new Date().toISOString(), '[resolve] vidking direct success', directResult.url);
+      return directResult;
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeoutId = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error('STREAM_NOT_FOUND'));
+    }, isVidfastUrl(url) ? 75000 : isVidkingUrl(url) ? 30000 : isVidzeeUrl(url) ? 24000 : isVideasyUrl(url) ? 18000 : RESOLVE_TIMEOUT_MS);
+
+    extractVideoUrls(
+      url,
+      (found) => {
+        if (settled || !found?.url) {
+          return;
+        }
+
+        console.log(new Date().toISOString(), '[resolve] found', found.type, found.via, found.url);
+
+        settled = true;
+        clearTimeout(timeoutId);
+        const resolved = {
+          success: true,
+          url: found.url,
+          stream: found.url,
+          type: found.type,
+          headers: normalizeHeaders(found.headers || {}),
+          provider: getProviderKeyFromUrl(url),
+          sourceUrl: url,
+          qualities: []
+        };
+
+        if (isVidfastUrl(url) && found.resolverHints?.vidfastRequests?.length) {
+          vidfastHintCache.set(`vidfast:${url}`, found.resolverHints, SIX_HOURS_MS);
+        }
+
+        attachQualities(resolved)
+          .then(resolve)
+          .catch(() => resolve(resolved));
+      },
+      isVidfastUrl(url)
+        ? { settleTimeout: 3000, navigationTimeout: 45000, minWaitAfterLoad: 4000, maxWaitAfterLoad: 18000 }
+        : isVidkingUrl(url)
+        ? { settleTimeout: 2500, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 14000 }
+        : isVidzeeUrl(url)
+        ? { settleTimeout: 2500, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 15000 }
+        : isVideasyUrl(url)
+        ? { settleTimeout: 2000, navigationTimeout: 30000, minWaitAfterLoad: 6000, maxWaitAfterLoad: 12000 }
+        : { settleTimeout: 2000, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 10000 }
+    ).catch((error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeoutId);
+      reject(error);
+    });
+  });
 }
 
 router.post('/', async (req, res) => {
@@ -620,99 +918,24 @@ router.post('/', async (req, res) => {
     return res.json({ ...cached, cached: true });
   }
 
-  if (isVidfastUrl(url)) {
-    const directResult = await tryResolveVidfastFromHints(url);
-    if (directResult) {
-      cache.set(cacheKey, directResult, ONE_HOUR_MS);
-      console.log(new Date().toISOString(), '[resolve] vidfast direct cache hit', directResult.url);
-      return res.json({ ...directResult, cached: true });
-    }
-  }
+  let inflight = inflightResolutions.get(cacheKey);
+  if (!inflight) {
+    inflight = resolveStream(url)
+      .then((result) => {
+        cache.set(cacheKey, result, ONE_HOUR_MS);
+        return result;
+      })
+      .finally(() => {
+        inflightResolutions.delete(cacheKey);
+      });
 
-  if (isVidzeeUrl(url)) {
-    const directResult = await tryResolveVidzeeDirect(url).catch(() => null);
-    if (directResult) {
-      cache.set(cacheKey, directResult, ONE_HOUR_MS);
-      console.log(new Date().toISOString(), '[resolve] vidzee direct success', directResult.url);
-      return res.json(directResult);
-    }
-  }
-
-  if (isVideasyUrl(url)) {
-    const directResult = await tryResolveVideasyDirect(url);
-    if (directResult) {
-      cache.set(cacheKey, directResult, ONE_HOUR_MS);
-      console.log(new Date().toISOString(), '[resolve] videasy direct success', directResult.url);
-      return res.json(directResult);
-    }
-  }
-
-  if (isVidkingUrl(url)) {
-    const directResult = await tryResolveVidkingDirect(url);
-    if (directResult) {
-      cache.set(cacheKey, directResult, ONE_HOUR_MS);
-      console.log(new Date().toISOString(), '[resolve] vidking direct success', directResult.url);
-      return res.json(directResult);
-    }
+    inflightResolutions.set(cacheKey, inflight);
+  } else {
+    console.log(new Date().toISOString(), '[resolve] joining inflight', url);
   }
 
   try {
-    const result = await new Promise((resolve, reject) => {
-      let settled = false;
-      const timeoutId = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        reject(new Error('STREAM_NOT_FOUND'));
-      }, isVidfastUrl(url) ? 75000 : isVidkingUrl(url) ? 30000 : isVidzeeUrl(url) ? 24000 : isVideasyUrl(url) ? 18000 : RESOLVE_TIMEOUT_MS);
-
-      extractVideoUrls(
-        url,
-        (found) => {
-          if (settled || !found?.url) {
-            return;
-          }
-
-          console.log(new Date().toISOString(), '[resolve] found', found.type, found.via, found.url);
-
-          settled = true;
-          clearTimeout(timeoutId);
-          const resolved = {
-            success: true,
-            url: found.url,
-            stream: found.url,
-            type: found.type,
-            headers: normalizeHeaders(found.headers || {}),
-            provider: getProviderKeyFromUrl(url),
-            sourceUrl: url,
-            qualities: []
-          };
-
-          if (isVidfastUrl(url) && found.resolverHints?.vidfastRequests?.length) {
-            vidfastHintCache.set(`vidfast:${url}`, found.resolverHints, SIX_HOURS_MS);
-          }
-
-          resolve(resolved);
-        },
-        isVidfastUrl(url)
-          ? { settleTimeout: 3000, navigationTimeout: 45000, minWaitAfterLoad: 4000, maxWaitAfterLoad: 18000 }
-          : isVidkingUrl(url)
-          ? { settleTimeout: 2500, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 14000 }
-          : isVidzeeUrl(url)
-          ? { settleTimeout: 2500, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 15000 }
-          : isVideasyUrl(url)
-          ? { settleTimeout: 2000, navigationTimeout: 30000, minWaitAfterLoad: 6000, maxWaitAfterLoad: 12000 }
-          : { settleTimeout: 2000, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 10000 }
-      ).catch((error) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeoutId);
-        reject(error);
-      });
-    });
-
-    cache.set(cacheKey, result, ONE_HOUR_MS);
+    const result = await inflight;
     console.log(new Date().toISOString(), '[resolve] success', result.url);
     return res.json(result);
   } catch (error) {
