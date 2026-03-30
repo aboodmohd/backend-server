@@ -154,18 +154,20 @@ function buildProxyPlaybackUrl(proxyBaseUrl, targetUrl, headers = {}) {
   const proxied = new URL(proxyBaseUrl);
   proxied.searchParams.set('url', targetUrl);
 
+  let headerOverrides = normalizeHeaders(headers);
+
   try {
     const parsedTarget = new URL(targetUrl);
-    if (parsedTarget.searchParams.has('headers') || parsedTarget.searchParams.has('host')) {
-      return proxied.toString();
+    if (parsedTarget.searchParams.has('headers')) {
+      delete headerOverrides.referer;
+      delete headerOverrides.origin;
     }
   } catch {
     // Fall through and attach sanitized headers when URL parsing fails.
   }
 
-  const normalizedHeaders = normalizeHeaders(headers);
-  if (Object.keys(normalizedHeaders).length) {
-    proxied.searchParams.set('headers', JSON.stringify(normalizedHeaders));
+  if (Object.keys(headerOverrides).length) {
+    proxied.searchParams.set('headers', JSON.stringify(headerOverrides));
   }
 
   return proxied.toString();

@@ -104,6 +104,14 @@ router.get('/', async (req, res) => {
     ...parseEmbeddedHeaders(targetUrl),
   };
 
+  if (!upstreamHeaders['user-agent']) {
+    upstreamHeaders['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
+  }
+
+  if (!upstreamHeaders.accept) {
+    upstreamHeaders.accept = '*/*';
+  }
+
   try {
     const upstream = await fetch(targetUrl, {
       headers: upstreamHeaders,
