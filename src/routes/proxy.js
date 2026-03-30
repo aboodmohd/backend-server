@@ -35,6 +35,20 @@ function parseEmbeddedHeaders(targetUrl) {
   }
 }
 
+function parseEmbeddedHost(targetUrl) {
+  try {
+    const parsed = new URL(targetUrl);
+    const embeddedHost = parsed.searchParams.get('host');
+    if (!embeddedHost) {
+      return '';
+    }
+
+    return new URL(embeddedHost).host;
+  } catch {
+    return '';
+  }
+}
+
 function buildAbsolutePlaylistUrl(playlistUrl, candidatePath) {
   const resolved = new URL(candidatePath, playlistUrl);
   const base = new URL(playlistUrl);
@@ -103,6 +117,7 @@ router.get('/', async (req, res) => {
     ...parsedHeaders,
     ...parseEmbeddedHeaders(targetUrl),
   };
+  const embeddedHost = parseEmbeddedHost(targetUrl);
 
   if (!upstreamHeaders['user-agent']) {
     upstreamHeaders['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
@@ -110,6 +125,10 @@ router.get('/', async (req, res) => {
 
   if (!upstreamHeaders.accept) {
     upstreamHeaders.accept = '*/*';
+  }
+
+  if (embeddedHost) {
+    upstreamHeaders.host = embeddedHost;
   }
 
   try {
