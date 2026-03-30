@@ -48,7 +48,11 @@ const VIDFAST_RUNTIME_PATCHES = [
 ];
 
 function isVidfastUrl(url) {
-  return String(url || '').includes('vidfast.pro');
+  try {
+    return /(^|\.)vidfast\.(pro|in|io|me|net|pm|xyz)$/i.test(new URL(String(url || '')).hostname);
+  } catch {
+    return false;
+  }
 }
 
 function isVideasyUrl(url) {
@@ -79,7 +83,7 @@ function shouldBlockVidfastNavigation(targetUrl, request) {
 
   try {
     const requestHost = new URL(request.url()).hostname;
-    return requestHost !== 'vidfast.pro';
+    return !/(^|\.)vidfast\.(pro|in|io|me|net|pm|xyz)$/i.test(requestHost);
   } catch {
     return false;
   }
@@ -92,7 +96,7 @@ function shouldBlockVidfastScript(targetUrl, request) {
 
   try {
     const requestHost = new URL(request.url()).hostname;
-    return requestHost !== 'vidfast.pro';
+    return !/(^|\.)vidfast\.(pro|in|io|me|net|pm|xyz)$/i.test(requestHost);
   } catch {
     return false;
   }
@@ -105,7 +109,7 @@ function shouldPatchVidfastScript(targetUrl, request) {
 
   try {
     const parsed = new URL(request.url());
-    return parsed.hostname === 'vidfast.pro' && parsed.pathname.includes('/_next/static/chunks/');
+    return /(^|\.)vidfast\.(pro|in|io|me|net|pm|xyz)$/i.test(parsed.hostname) && parsed.pathname.includes('/_next/static/chunks/');
   } catch {
     return false;
   }

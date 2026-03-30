@@ -75,7 +75,11 @@ function shouldTrackActivity(url, resourceType) {
 }
 
 function isVidfastUrl(url) {
-  return String(url || '').includes('vidfast.pro');
+  try {
+    return /(^|\.)vidfast\.(pro|in|io|me|net|pm|xyz)$/i.test(new URL(String(url || '')).hostname);
+  } catch {
+    return false;
+  }
 }
 
 function isVideasyUrl(url) {
@@ -159,7 +163,7 @@ async function primeVidzeePlayer(page, targetUrl) {
 }
 
 function isVidfastResolverUrl(url) {
-  return /^https:\/\/vidfast\.pro\/APA91/i.test(String(url || ''));
+  return /^https:\/\/vidfast\.(?:pro|in|io|me|net|pm|xyz)\/APA91/i.test(String(url || ''));
 }
 
 function isLikelyStreamUrl(url) {
