@@ -16,6 +16,7 @@ const SIX_HOURS_MS = 6 * ONE_HOUR_MS;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 const RESOLVE_TIMEOUT_MS = Number(process.env.RESOLVE_TIMEOUT_MS || 30000);
 const PLAYLIST_FETCH_TIMEOUT_MS = Number(process.env.PLAYLIST_FETCH_TIMEOUT_MS || 8000);
+const VIDNEST_DECRYPT_ALPHABET = 'RB0fpH8ZEyVLkv7c2i6MAJ5u3IKFDxlS1NTsnGaqmXYdUrtzjwObCgQP94hoeW+/';
 const VIDZEE_KEY_SECRET = '7c9e2b4a1f6d8a3e5';
 const VIDZEE_SERVER_IDS = ['0', '1', '2', '3', '7', '6', '8', '9', '10', '11', '12'];
 const videasyProxyUrl = process.env.VIDEASY_PROXY_URL || process.env.RESIDENTIAL_PROXY_URL || '';
@@ -320,6 +321,14 @@ function isVideasyUrl(url) {
   return /player\.videasy\.net/i.test(String(url || ''));
 }
 
+function isVidnestUrl(url) {
+  try {
+    return /(^|\.)vidnest\.fun$/i.test(new URL(String(url || '')).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function isVidzeeUrl(url) {
   return /player\.vidzee\.wtf\/v2\/embed\//i.test(String(url || ''));
 }
@@ -330,10 +339,136 @@ function isVidkingUrl(url) {
 
 function getProviderKeyFromUrl(url) {
   if (isVidfastUrl(url)) return 'vidfast';
+  if (isVidnestUrl(url)) return 'vidnest';
   if (isVideasyUrl(url)) return 'videasy';
   if (isVidzeeUrl(url)) return 'vidzee';
   if (isVidkingUrl(url)) return 'vidking';
   return null;
+}
+
+function parseVidnestSourceUrl(sourceUrl) {
+  try {
+    const parsed = new URL(sourceUrl);
+    if (!/(^|\.)vidnest\.fun$/i.test(parsed.hostname)) {
+      return null;
+    }
+
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    if (parts[0] === 'movie' && parts[1]) {
+      return {
+        mediaType: 'movie',
+        tmdbId: parts[1]
+      };
+    }
+
+    if (parts[0] === 'tv' && parts[1] && parts[2] && parts[3]) {
+      return {
+        mediaType: 'tv',
+        tmdbId: parts[1],
+        seasonId: parts[2],
+        episodeId: parts[3]
+      };
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function buildVidnestApiCandidates(details) {
+  const variants = ['allmovies', 'moviebox', 'primesrc'];
+  const path = details.mediaType === 'movie'
+    ? `movie/${details.tmdbId}`
+    : `tv/${details.tmdbId}/${details.seasonId}/${details.episodeId}`;
+
+  const candidates = variants.map((variant) => `https://new.vidnest.fun/${variant}/${path}`);
+  candidates.push(`https://new.vidnest.fun/onehd/${path}?server=upcloud`);
+  return candidates;
+}
+
+function decodeVidnestPayload(cipherText) {
+  const customAlphabet = VIDNEST_DECRYPT_ALPHABET;
+  const standardAlphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const translation = new Map(customAlphabet.split('').map((char, index) => [char, standardAlphabet[index]]));
+  const translated = String(cipherText || '')
+    .trim()
+    .split('')
+    .map((char) => translation.get(char) || char)
+    .join('');
+  const paddingLength = translated.length % 4;
+  const padded = paddingLength ? translated + '='.repeat(4 - paddingLength) : translated;
+  return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+}
+
+function unwrapVidnestStream(rawUrl, payloadHeaders = {}) {
+  const normalizedPayloadHeaders = normalizeHeaders(payloadHeaders);
+
+  try {
+    const parsed = new URL(rawUrl);
+    const nestedUrl = parsed.searchParams.get('url');
+    const encodedHeaders = parsed.searchParams.get('headers');
+
+    if (!nestedUrl || !/\/mp4-proxy$/i.test(parsed.pathname)) {
+      return {
+        url: rawUrl,
+        headers: normalizedPayloadHeaders
+      };
+    }
+
+    let proxyHeaders = {};
+    if (encodedHeaders) {
+      try {
+        proxyHeaders = JSON.parse(encodedHeaders);
+      } catch {
+        proxyHeaders = {};
+      }
+    }
+
+    return {
+      url: nestedUrl,
+      headers: normalizeHeaders({
+        ...proxyHeaders,
+        ...normalizedPayloadHeaders
+      })
+    };
+  } catch {
+    return {
+      url: rawUrl,
+      headers: normalizedPayloadHeaders
+    };
+  }
+}
+
+function pickVidnestSource(payload) {
+  if (typeof payload?.url === 'string' && payload.url.startsWith('http')) {
+    return {
+      url: payload.url,
+      headers: payload.headers || {},
+      sources: payload.sources || payload.streams || []
+    };
+  }
+
+  const streams = Array.isArray(payload?.streams) ? payload.streams : [];
+  const streamEntry = streams.find((entry) => typeof entry?.url === 'string' && entry.url.startsWith('http'));
+  if (streamEntry?.url) {
+    return {
+      url: streamEntry.url,
+      headers: streamEntry.headers || payload?.headers || {},
+      sources: streams
+    };
+  }
+
+  const selectedSource = pickVideasySource(payload);
+  if (!selectedSource?.url) {
+    return null;
+  }
+
+  return {
+    url: selectedSource.url,
+    headers: selectedSource.headers || payload?.headers || {},
+    sources: payload?.sources || []
+  };
 }
 
 function parseVidzeeEmbedUrl(url) {
@@ -710,6 +845,62 @@ async function tryResolveVidkingDirect(sourceUrl) {
   return null;
 }
 
+async function tryResolveVidnestDirect(sourceUrl) {
+  const details = parseVidnestSourceUrl(sourceUrl);
+  if (!details) {
+    return null;
+  }
+
+  for (const apiUrl of buildVidnestApiCandidates(details)) {
+    try {
+      const response = await fetch(apiUrl, {
+        headers: {
+          accept: 'application/json, text/plain, */*',
+          'accept-language': 'en-US,en;q=0.9',
+          origin: 'https://vidnest.fun',
+          referer: sourceUrl,
+          'user-agent': 'Mozilla/5.0'
+        }
+      });
+
+      if (!response.ok) {
+        continue;
+      }
+
+      const payload = await response.json();
+      if (!payload?.data) {
+        continue;
+      }
+
+      const decrypted = decodeVidnestPayload(payload.data);
+      const selectedSource = pickVidnestSource(decrypted);
+      if (!selectedSource?.url) {
+        continue;
+      }
+
+      const unwrapped = unwrapVidnestStream(selectedSource.url, selectedSource.headers);
+      if (!unwrapped.url) {
+        continue;
+      }
+
+      return attachQualities({
+        success: true,
+        url: unwrapped.url,
+        stream: unwrapped.url,
+        type: detectType(unwrapped.url),
+        headers: unwrapped.headers,
+        provider: 'vidnest',
+        sourceUrl,
+        qualities: []
+      }, selectedSource.sources);
+    } catch (error) {
+      console.log(new Date().toISOString(), '[vidnest] direct api failed', apiUrl, error?.message || String(error));
+    }
+  }
+
+  return null;
+}
+
 async function getVidzeeApiKey() {
   const cached = vidzeeKeyCache.get('vidzee:api-key');
   if (cached) {
@@ -905,6 +1096,14 @@ async function resolveStream(url) {
     }
   }
 
+  if (isVidnestUrl(url)) {
+    const directResult = await tryResolveVidnestDirect(url).catch(() => null);
+    if (directResult) {
+      console.log(new Date().toISOString(), '[resolve] vidnest direct success', directResult.url);
+      return directResult;
+    }
+  }
+
   if (isVideasyUrl(url)) {
     const directResult = await tryResolveVideasyDirect(url);
     if (directResult) {
@@ -965,6 +1164,8 @@ async function resolveStream(url) {
         ? { settleTimeout: 2500, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 14000 }
         : isVidzeeUrl(url)
         ? { settleTimeout: 2500, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 15000 }
+        : isVidnestUrl(url)
+        ? { settleTimeout: 2000, navigationTimeout: 20000, minWaitAfterLoad: 3000, maxWaitAfterLoad: 8000 }
         : isVideasyUrl(url)
         ? { settleTimeout: 2000, navigationTimeout: 30000, minWaitAfterLoad: 6000, maxWaitAfterLoad: 12000 }
         : { settleTimeout: 2000, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 10000 }
