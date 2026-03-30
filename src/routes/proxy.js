@@ -11,6 +11,16 @@ function normalizeHeaders(headers = {}) {
   }, {});
 }
 
+function filterForwardHeaders(headers = {}) {
+  const allowed = new Set(['referer', 'origin', 'user-agent', 'cookie', 'range', 'accept', 'accept-language']);
+  return Object.entries(normalizeHeaders(headers)).reduce((acc, [key, value]) => {
+    if (allowed.has(key)) {
+      acc[key] = value;
+    }
+    return acc;
+  }, {});
+}
+
 function parseEmbeddedHeaders(targetUrl) {
   try {
     const parsed = new URL(targetUrl);
@@ -19,7 +29,7 @@ function parseEmbeddedHeaders(targetUrl) {
       return {};
     }
 
-    return normalizeHeaders(JSON.parse(embedded));
+    return filterForwardHeaders(JSON.parse(embedded));
   } catch {
     return {};
   }
@@ -83,7 +93,7 @@ router.get('/', async (req, res) => {
   let parsedHeaders = {};
   if (req.query.headers) {
     try {
-      parsedHeaders = normalizeHeaders(JSON.parse(String(req.query.headers)));
+      parsedHeaders = filterForwardHeaders(JSON.parse(String(req.query.headers)));
     } catch {
       return res.status(400).json({ error: 'invalid headers' });
     }
