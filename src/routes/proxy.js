@@ -35,6 +35,15 @@ function parseEmbeddedHeaders(targetUrl) {
   }
 }
 
+function hasEmbeddedProxyParams(targetUrl) {
+  try {
+    const parsed = new URL(targetUrl);
+    return parsed.searchParams.has('headers') || parsed.searchParams.has('host');
+  } catch {
+    return false;
+  }
+}
+
 function parseEmbeddedHost(targetUrl) {
   try {
     const parsed = new URL(targetUrl);
@@ -70,6 +79,10 @@ function getProxyBaseUrl(req) {
 function buildProxyUrl(proxyBaseUrl, targetUrl, headers = {}) {
   const proxied = new URL(proxyBaseUrl);
   proxied.searchParams.set('url', targetUrl);
+
+  if (hasEmbeddedProxyParams(targetUrl)) {
+    return proxied.toString();
+  }
 
   const normalizedHeaders = normalizeHeaders(headers);
   if (Object.keys(normalizedHeaders).length) {
@@ -113,10 +126,14 @@ router.get('/', async (req, res) => {
     }
   }
 
-  const upstreamHeaders = {
-    ...parsedHeaders,
-    ...parseEmbeddedHeaders(targetUrl),
-  };
+  const embeddedHeaders = parseEmbeddedHeaders(targetUrl);
+  const useEmbeddedHeaders = hasEmbeddedProxyParams(targetUrl);
+  const upstreamHeaders = useEmbeddedHeaders
+    ? { ...embeddedHeaders }
+    : {
+        ...parsedHeaders,
+        ...embeddedHeaders,
+      };
   const embeddedHost = parseEmbeddedHost(targetUrl);
 
   if (!upstreamHeaders['user-agent']) {
@@ -147,7 +164,12 @@ router.get('/', async (req, res) => {
 
     if (isPlaylistResponse(targetUrl, contentType)) {
       const playlistBody = await upstream.text();
-      const rewritten = rewritePlaylistBody(playlistBody, targetUrl, getProxyBaseUrl(req), upstreamHeaders);
+      const rewritten = rewritePlaylistBody(
+        playlistBody,
+        targetUrl,
+        getProxyBaseUrl(req),
+        useEmbeddedHeaders ? {} : upstreamHeaders
+      );
       return res.send(rewritten);
     }
 
