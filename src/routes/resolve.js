@@ -129,6 +129,65 @@ function buildAbsolutePlaylistUrl(playlistUrl, candidatePath) {
   return resolved.toString();
 }
 
+function shouldProxyPlaybackUrl(targetUrl, headers = {}, type = '') {
+  const normalizedType = String(type || '').toUpperCase();
+  const normalizedHeaders = normalizeHeaders(headers);
+
+  if (normalizedType !== 'HLS' && !/\.m3u8(\?|$)/i.test(String(targetUrl || ''))) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(String(targetUrl || ''));
+    return Boolean(Object.keys(normalizedHeaders).length || parsed.searchParams.has('headers') || parsed.searchParams.has('host'));
+  } catch {
+    return Boolean(Object.keys(normalizedHeaders).length);
+  }
+}
+
+function getProxyBaseUrl(req) {
+  const protocol = req.get('x-forwarded-proto') || req.protocol || 'https';
+  return `${protocol}://${req.get('host')}/proxy`;
+}
+
+function buildProxyPlaybackUrl(proxyBaseUrl, targetUrl, headers = {}) {
+  const proxied = new URL(proxyBaseUrl);
+  proxied.searchParams.set('url', targetUrl);
+
+  const normalizedHeaders = normalizeHeaders(headers);
+  if (Object.keys(normalizedHeaders).length) {
+    proxied.searchParams.set('headers', JSON.stringify(normalizedHeaders));
+  }
+
+  return proxied.toString();
+}
+
+function withProxiedPlaybackUrls(result, req) {
+  const proxyBaseUrl = getProxyBaseUrl(req);
+
+  const nextQualities = Array.isArray(result?.qualities)
+    ? result.qualities.map((entry) => {
+        if (!shouldProxyPlaybackUrl(entry?.url, result?.headers || {}, entry?.type || result?.type)) {
+          return entry;
+        }
+
+        return {
+          ...entry,
+          url: buildProxyPlaybackUrl(proxyBaseUrl, entry.url, result.headers || {})
+        };
+      })
+    : [];
+
+  const shouldProxyPrimary = shouldProxyPlaybackUrl(result?.url, result?.headers || {}, result?.type);
+
+  return {
+    ...result,
+    url: shouldProxyPrimary ? buildProxyPlaybackUrl(proxyBaseUrl, result.url, result.headers || {}) : result.url,
+    stream: shouldProxyPrimary ? buildProxyPlaybackUrl(proxyBaseUrl, result.stream || result.url, result.headers || {}) : (result.stream || result.url),
+    qualities: nextQualities
+  };
+}
+
 function buildFallbackMasterPlaylistUrls(playlistUrl) {
   const parsed = new URL(playlistUrl);
   const pathname = parsed.pathname || '';
@@ -1207,7 +1266,7 @@ router.post('/', async (req, res) => {
   if (cached) {
     console.log(new Date().toISOString(), '[resolve] cache hit', url);
     logResolvedQualities('[resolve] qualities', cached.qualities);
-    return res.json({ ...cached, cached: true });
+    return res.json({ ...withProxiedPlaybackUrls(cached, req), cached: true });
   }
 
   let inflight = inflightResolutions.get(cacheKey);
@@ -1230,7 +1289,7 @@ router.post('/', async (req, res) => {
     const result = await inflight;
     logResolvedQualities('[resolve] qualities', result.qualities);
     console.log(new Date().toISOString(), '[resolve] success', result.url);
-    return res.json(result);
+    return res.json(withProxiedPlaybackUrls(result, req));
   } catch (error) {
     console.log(new Date().toISOString(), '[resolve] failed', error?.message || 'STREAM_NOT_FOUND');
     return res.status(404).json({

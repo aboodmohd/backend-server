@@ -4,6 +4,7 @@ import extractRoute from './routes/extract.js';
 import streamRoute from './routes/stream.js';
 import downloadRoute from './routes/download.js';
 import resolveRoute from './routes/resolve.js';
+import proxyRoute from './routes/proxy.js';
 import { warmBrowser } from './workers/playwright.js';
 
 const app = express();
@@ -26,6 +27,7 @@ app.use('/api/extract', extractRoute);
 app.use('/api/stream', streamRoute);
 app.use('/api/download', downloadRoute);
 app.use('/resolve', resolveRoute);
+app.use('/proxy', proxyRoute);
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
