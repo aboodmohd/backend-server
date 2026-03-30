@@ -314,7 +314,26 @@ async function attachQualities(result, sourceCandidates = []) {
 }
 
 function isVidfastUrl(url) {
-  return String(url || '').includes('vidfast.pro');
+  return /(^|\.)vidfast\.(pro|in|io|me|net|pm|xyz)$/i.test(new URL(String(url || 'https://invalid.local')).hostname);
+}
+
+function getVidfastHeaders(sourceUrl, requestHeaders = {}) {
+  let origin = 'https://vidfast.pro';
+
+  try {
+    const parsed = new URL(sourceUrl);
+    origin = parsed.origin;
+  } catch {
+    origin = 'https://vidfast.pro';
+  }
+
+  return {
+    accept: '*/*',
+    'accept-language': 'en-US,en;q=0.9',
+    origin,
+    referer: `${origin}/`,
+    ...requestHeaders
+  };
 }
 
 function isVideasyUrl(url) {
@@ -1027,13 +1046,7 @@ async function tryResolveVidfastFromHints(sourceUrl) {
     try {
       const response = await fetch(request.url, {
         method: request.method || 'GET',
-        headers: {
-          accept: '*/*',
-          'accept-language': 'en-US,en;q=0.9',
-          origin: 'https://vidfast.pro',
-          referer: 'https://vidfast.pro/',
-          ...(request.headers || {})
-        }
+        headers: getVidfastHeaders(sourceUrl, request.headers || {})
       });
 
       const contentType = response.headers.get('content-type') || '';
