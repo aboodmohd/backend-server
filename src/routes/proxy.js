@@ -90,8 +90,8 @@ router.get('/', async (req, res) => {
   }
 
   const upstreamHeaders = {
-    ...parseEmbeddedHeaders(targetUrl),
     ...parsedHeaders,
+    ...parseEmbeddedHeaders(targetUrl),
   };
 
   try {
