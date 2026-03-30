@@ -889,7 +889,7 @@ async function tryResolveVidnestDirect(sourceUrl) {
         stream: unwrapped.url,
         type: detectType(unwrapped.url),
         headers: unwrapped.headers,
-        provider: 'vidnest',
+        provider: 'Videasy',
         sourceUrl,
         qualities: []
       }, selectedSource.sources);
