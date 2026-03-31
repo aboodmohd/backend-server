@@ -31,6 +31,16 @@ function normalizeHeaders(headers = {}) {
   }, {});
 }
 
+function sanitizePlaybackHeaders(headers = {}) {
+  const allowed = new Set(['referer', 'origin', 'user-agent', 'range']);
+  return Object.entries(normalizeHeaders(headers)).reduce((acc, [key, value]) => {
+    if (allowed.has(key)) {
+      acc[key] = value;
+    }
+    return acc;
+  }, {});
+}
+
 function logResolvedQualities(label, qualities = []) {
   if (!Array.isArray(qualities) || !qualities.length) {
     console.log(new Date().toISOString(), label, 'none');
@@ -154,7 +164,7 @@ function buildProxyPlaybackUrl(proxyBaseUrl, targetUrl, headers = {}) {
   const proxied = new URL(proxyBaseUrl);
   proxied.searchParams.set('url', targetUrl);
 
-  let headerOverrides = normalizeHeaders(headers);
+  let headerOverrides = sanitizePlaybackHeaders(headers);
 
   try {
     const parsedTarget = new URL(targetUrl);
@@ -258,12 +268,14 @@ async function fetchPlaylistQualities(playlistUrl, headers = {}) {
     return [];
   }
 
+  const playlistHeaders = sanitizePlaybackHeaders(headers);
+
   async function fetchPlaylistBody(url) {
     const { signal, done } = withTimeout();
 
     try {
       const response = await fetch(url, {
-        headers,
+        headers: playlistHeaders,
         signal
       });
 

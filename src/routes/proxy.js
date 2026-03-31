@@ -12,7 +12,7 @@ function normalizeHeaders(headers = {}) {
 }
 
 function filterForwardHeaders(headers = {}) {
-  const allowed = new Set(['referer', 'origin', 'user-agent', 'cookie', 'range', 'accept', 'accept-language']);
+  const allowed = new Set(['referer', 'origin', 'user-agent', 'range']);
   return Object.entries(normalizeHeaders(headers)).reduce((acc, [key, value]) => {
     if (allowed.has(key)) {
       acc[key] = value;
@@ -58,6 +58,13 @@ function parseEmbeddedHost(targetUrl) {
   }
 }
 
+function stripEmbeddedProxyParams(targetUrl) {
+  const parsed = new URL(targetUrl);
+  parsed.searchParams.delete('headers');
+  parsed.searchParams.delete('host');
+  return parsed.toString();
+}
+
 function buildAbsolutePlaylistUrl(playlistUrl, candidatePath) {
   const resolved = new URL(candidatePath, playlistUrl);
   const base = new URL(playlistUrl);
@@ -84,7 +91,7 @@ function buildProxyUrl(proxyBaseUrl, targetUrl, headers = {}) {
     return proxied.toString();
   }
 
-  const normalizedHeaders = normalizeHeaders(headers);
+  const normalizedHeaders = filterForwardHeaders(headers);
   if (Object.keys(normalizedHeaders).length) {
     proxied.searchParams.set('headers', JSON.stringify(normalizedHeaders));
   }
@@ -126,6 +133,13 @@ router.get('/', async (req, res) => {
     }
   }
 
+  let upstreamUrl = targetUrl;
+  try {
+    upstreamUrl = stripEmbeddedProxyParams(targetUrl);
+  } catch {
+    return res.status(400).json({ error: 'invalid url' });
+  }
+
   const embeddedHeaders = parseEmbeddedHeaders(targetUrl);
   const useEmbeddedHeaders = hasEmbeddedProxyParams(targetUrl);
   const upstreamHeaders = useEmbeddedHeaders
@@ -149,7 +163,8 @@ router.get('/', async (req, res) => {
   }
 
   try {
-    const upstream = await fetch(targetUrl, {
+    const upstream = await fetch(upstreamUrl, {
+      redirect: 'follow',
       headers: upstreamHeaders,
     });
 
