@@ -1,6 +1,9 @@
 import { Router } from 'express';
+import { ProxyAgent } from 'undici';
 
 const router = Router();
+const playbackProxyUrl = process.env.PLAYBACK_PROXY_URL || process.env.RESIDENTIAL_PROXY_URL || '';
+const playbackProxyAgent = playbackProxyUrl ? new ProxyAgent(playbackProxyUrl) : null;
 
 function normalizeHeaders(headers = {}) {
   return Object.entries(headers).reduce((acc, [key, value]) => {
@@ -166,7 +169,10 @@ router.get('/', async (req, res) => {
     const upstream = await fetch(upstreamUrl, {
       redirect: 'follow',
       headers: upstreamHeaders,
+      dispatcher: playbackProxyAgent || undefined,
     });
+
+    console.log(new Date().toISOString(), '[proxy] upstream', upstream.status, upstreamUrl, embeddedHost ? `host=${embeddedHost}` : '');
 
     if (!upstream.ok) {
       return res.status(upstream.status).send(await upstream.text());

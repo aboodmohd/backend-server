@@ -21,6 +21,8 @@ const VIDZEE_KEY_SECRET = '7c9e2b4a1f6d8a3e5';
 const VIDZEE_SERVER_IDS = ['0', '1', '2', '3', '7', '6', '8', '9', '10', '11', '12'];
 const videasyProxyUrl = process.env.VIDEASY_PROXY_URL || process.env.RESIDENTIAL_PROXY_URL || '';
 const videasyProxyAgent = videasyProxyUrl ? new ProxyAgent(videasyProxyUrl) : null;
+const playbackProxyUrl = process.env.PLAYBACK_PROXY_URL || process.env.RESIDENTIAL_PROXY_URL || '';
+const playbackProxyAgent = playbackProxyUrl ? new ProxyAgent(playbackProxyUrl) : null;
 
 function normalizeHeaders(headers = {}) {
   return Object.entries(headers).reduce((acc, [key, value]) => {
@@ -276,7 +278,8 @@ async function fetchPlaylistQualities(playlistUrl, headers = {}) {
     try {
       const response = await fetch(url, {
         headers: playlistHeaders,
-        signal
+        signal,
+        dispatcher: playbackProxyAgent || undefined,
       });
 
       if (!response.ok) {
