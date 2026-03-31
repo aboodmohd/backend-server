@@ -61,10 +61,35 @@ function parseEmbeddedHost(targetUrl) {
   }
 }
 
+function parseEmbeddedHostUrl(targetUrl) {
+  try {
+    const parsed = new URL(targetUrl);
+    const embeddedHost = parsed.searchParams.get('host');
+    if (!embeddedHost) {
+      return null;
+    }
+
+    return new URL(embeddedHost);
+  } catch {
+    return null;
+  }
+}
+
 function stripEmbeddedProxyParams(targetUrl) {
   const parsed = new URL(targetUrl);
   parsed.searchParams.delete('headers');
   parsed.searchParams.delete('host');
+  return parsed.toString();
+}
+
+function applyEmbeddedHost(targetUrl, embeddedHostUrl) {
+  if (!embeddedHostUrl) {
+    return targetUrl;
+  }
+
+  const parsed = new URL(targetUrl);
+  parsed.protocol = embeddedHostUrl.protocol;
+  parsed.host = embeddedHostUrl.host;
   return parsed.toString();
 }
 
@@ -143,6 +168,11 @@ router.get('/', async (req, res) => {
     return res.status(400).json({ error: 'invalid url' });
   }
 
+  const embeddedHostUrl = parseEmbeddedHostUrl(targetUrl);
+  if (embeddedHostUrl) {
+    upstreamUrl = applyEmbeddedHost(upstreamUrl, embeddedHostUrl);
+  }
+
   const embeddedHeaders = parseEmbeddedHeaders(targetUrl);
   const useEmbeddedHeaders = hasEmbeddedProxyParams(targetUrl);
   const upstreamHeaders = useEmbeddedHeaders
@@ -161,10 +191,6 @@ router.get('/', async (req, res) => {
     upstreamHeaders.accept = '*/*';
   }
 
-  if (embeddedHost) {
-    upstreamHeaders.host = embeddedHost;
-  }
-
   try {
     const upstream = await fetch(upstreamUrl, {
       redirect: 'follow',
@@ -172,7 +198,7 @@ router.get('/', async (req, res) => {
       dispatcher: playbackProxyAgent || undefined,
     });
 
-    console.log(new Date().toISOString(), '[proxy] upstream', upstream.status, upstreamUrl, embeddedHost ? `host=${embeddedHost}` : '');
+    console.log(new Date().toISOString(), '[proxy] upstream', upstream.status, upstreamUrl, embeddedHost ? `target-host=${embeddedHost}` : '');
 
     if (!upstream.ok) {
       return res.status(upstream.status).send(await upstream.text());
