@@ -116,6 +116,11 @@ function getDefaultUserAgent() {
   );
 }
 
+function isCloudflareBlockPage(body = '') {
+  const snippet = String(body || '').slice(0, 4000);
+  return /attention required! \| cloudflare/i.test(snippet) || /just a moment/i.test(snippet) || /challenge-platform/i.test(snippet);
+}
+
 function pickVideasySourceFromPayload(payload) {
   const sources = Array.isArray(payload?.sources) ? payload.sources : [];
 
@@ -125,7 +130,87 @@ function pickVideasySourceFromPayload(payload) {
       const leftScore = Number.parseInt(String(left.quality || '').replace(/\D/g, ''), 10) || 0;
       const rightScore = Number.parseInt(String(right.quality || '').replace(/\D/g, ''), 10) || 0;
       return rightScore - leftScore;
-    })[0] || null;
+     })[0] || null;
+}
+
+async function decryptVideasyPayloadInPage(page, encryptedPayload, mediaId) {
+  return await page.evaluate(async ({ encrypted, numericMediaId }) => {
+    const compiled = await WebAssembly.compileStreaming(fetch('https://player.videasy.net/module.wasm'));
+    const { exports } = await WebAssembly.instantiate(compiled, {
+      env: Object.assign(Object.create(globalThis), {
+        seed: () => Date.now() * Math.random(),
+        abort(message, file, line, column) {
+          throw new Error(`${message}:${file}:${line}:${column}`);
+        }
+      })
+    });
+    const memory = exports.memory;
+
+    const readString = (ptr) => {
+      if (!ptr) {
+        return null;
+      }
+
+      const end = ptr + new Uint32Array(memory.buffer)[(ptr - 4) >>> 2] >>> 1;
+      const buffer = new Uint16Array(memory.buffer);
+      let cursor = ptr >>> 1;
+      let output = '';
+
+      while (end - cursor > 1024) {
+        output += String.fromCharCode(...buffer.subarray(cursor, cursor += 1024));
+      }
+
+      return output + String.fromCharCode(...buffer.subarray(cursor, end));
+    };
+
+    const writeString = (value) => {
+      const ptr = exports.__new(value.length << 1, 2) >>> 0;
+      const buffer = new Uint16Array(memory.buffer);
+
+      for (let index = 0; index < value.length; index += 1) {
+        buffer[(ptr >>> 1) + index] = value.charCodeAt(index);
+      }
+
+      return ptr;
+    };
+
+    Function(readString(exports.serve() >>> 0))();
+
+    const hash = await new Promise((resolve, reject) => {
+      const startedAt = Date.now();
+
+      const poll = () => {
+        if (window.hash) {
+          resolve(window.hash);
+          return;
+        }
+
+        if (Date.now() - startedAt > 10000) {
+          reject(new Error('VIDEASY_HASH_TIMEOUT'));
+          return;
+        }
+
+        setTimeout(poll, 25);
+      };
+
+      poll();
+    });
+
+    if (!exports.verify(writeString(hash))) {
+      throw new Error('VIDEASY_HASH_VERIFY_FAILED');
+    }
+
+    return readString(exports.decrypt(writeString(encrypted), numericMediaId) >>> 0) || '';
+  }, {
+    encrypted: String(encryptedPayload || ''),
+    numericMediaId: Number(mediaId)
+  });
+}
+
+async function closeUnexpectedPage(newPage, reason) {
+  console.log(new Date().toISOString(), reason, newPage.url() || 'about:blank');
+  await newPage.waitForTimeout(250).catch(() => undefined);
+  await newPage.close().catch(() => undefined);
 }
 
 async function primeVideasyPlayer(page, targetUrl) {
@@ -786,6 +871,9 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   });
 
   const page = await context.newPage();
+  page.on('popup', (popup) => {
+    closeUnexpectedPage(popup, '[popup] closing').catch(() => undefined);
+  });
   let firstResultResolved = false;
   let lastRelevantActivityAt = Date.now();
   const vidfastResolverHints = [];
@@ -1066,6 +1154,10 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       timeout: options.navigationTimeout ?? 30000
     });
 
+    if (isVideasyUrl(targetUrl)) {
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => undefined);
+    }
+
     if (isVidfastUrl(targetUrl) && expectedVidfastPath) {
       const currentPath = getExpectedVidfastPath(page.url());
       if (currentPath && currentPath !== expectedVidfastPath) {
@@ -1208,14 +1300,29 @@ export async function getVideasySession(targetUrl = 'https://player.videasy.net/
   const page = await context.newPage();
 
   try {
+    await page.goto('https://player.videasy.net/', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    }).catch(() => undefined);
+
+    await page.waitForTimeout(2000).catch(() => undefined);
+
     await page.goto(targetUrl, {
       waitUntil: 'domcontentloaded',
       timeout: 30000
     });
 
-    await page.waitForTimeout(5000).catch(() => undefined);
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => undefined);
+    await primeVideasyPlayer(page, targetUrl).catch(() => undefined);
+    await page.waitForTimeout(6000).catch(() => undefined);
 
-    const cookies = await context.cookies(['https://player.videasy.net', 'https://api.videasy.net']).catch(() => []);
+    const cookies = await context.cookies([
+      'https://player.videasy.net',
+      'https://api.videasy.net',
+      'https://api2.videasy.net',
+      'https://users.videasy.net',
+      'https://db.videasy.net'
+    ]).catch(() => []);
     const cookieHeader = cookies
       .filter((cookie) => !cookie.expires || cookie.expires * 1000 > now)
       .map((cookie) => `${cookie.name}=${cookie.value}`)
@@ -1296,77 +1403,7 @@ export async function decryptVideasyPayload(encryptedPayload, mediaId, targetUrl
       timeout: 30000
     });
 
-    return await page.evaluate(async ({ encrypted, numericMediaId }) => {
-      const compiled = await WebAssembly.compileStreaming(fetch('https://player.videasy.net/module.wasm'));
-      const { exports } = await WebAssembly.instantiate(compiled, {
-        env: Object.assign(Object.create(globalThis), {
-          seed: () => Date.now() * Math.random(),
-          abort(message, file, line, column) {
-            throw new Error(`${message}:${file}:${line}:${column}`);
-          }
-        })
-      });
-      const memory = exports.memory;
-
-      const readString = (ptr) => {
-        if (!ptr) {
-          return null;
-        }
-
-        const end = ptr + new Uint32Array(memory.buffer)[(ptr - 4) >>> 2] >>> 1;
-        const buffer = new Uint16Array(memory.buffer);
-        let cursor = ptr >>> 1;
-        let output = '';
-
-        while (end - cursor > 1024) {
-          output += String.fromCharCode(...buffer.subarray(cursor, cursor += 1024));
-        }
-
-        return output + String.fromCharCode(...buffer.subarray(cursor, end));
-      };
-
-      const writeString = (value) => {
-        const ptr = exports.__new(value.length << 1, 2) >>> 0;
-        const buffer = new Uint16Array(memory.buffer);
-
-        for (let index = 0; index < value.length; index += 1) {
-          buffer[(ptr >>> 1) + index] = value.charCodeAt(index);
-        }
-
-        return ptr;
-      };
-
-      Function(readString(exports.serve() >>> 0))();
-
-      const hash = await new Promise((resolve, reject) => {
-        const startedAt = Date.now();
-
-        const poll = () => {
-          if (window.hash) {
-            resolve(window.hash);
-            return;
-          }
-
-          if (Date.now() - startedAt > 10000) {
-            reject(new Error('VIDEASY_HASH_TIMEOUT'));
-            return;
-          }
-
-          setTimeout(poll, 25);
-        };
-
-        poll();
-      });
-
-      if (!exports.verify(writeString(hash))) {
-        throw new Error('VIDEASY_HASH_VERIFY_FAILED');
-      }
-
-      return readString(exports.decrypt(writeString(encrypted), numericMediaId) >>> 0) || '';
-    }, {
-      encrypted: String(encryptedPayload || ''),
-      numericMediaId: Number(mediaId)
-    });
+    return await decryptVideasyPayloadInPage(page, encryptedPayload, mediaId);
   } finally {
     await context.close().catch(() => undefined);
   }
@@ -1374,121 +1411,159 @@ export async function decryptVideasyPayload(encryptedPayload, mediaId, targetUrl
 
 export async function resolveVideasyPayloadInBrowser(apiUrl, mediaId, targetUrl = 'https://player.videasy.net/') {
   const browser = await getBrowser();
-  const pageUrl = new URL('/robots.txt', targetUrl).toString();
   const context = await browser.newContext({
     bypassCSP: true,
     viewport: { width: 1280, height: 720 },
     userAgent: getDefaultUserAgent()
   });
   const page = await context.newPage();
+  const capturedPayloads = [];
+  const seenPayloadKeys = new Set();
+
+  const rememberPayload = async (url, status, body) => {
+    console.log(new Date().toISOString(), '[videasy:browser-api]', status, url, '->', String(body || '').slice(0, 500));
+
+    if (status < 200 || status >= 300 || !body || isCloudflareBlockPage(body)) {
+      return;
+    }
+
+    const key = `${url}::${body.length}`;
+    if (seenPayloadKeys.has(key)) {
+      return;
+    }
+
+    seenPayloadKeys.add(key);
+    capturedPayloads.push({ url, body });
+  };
+
+  page.on('popup', (popup) => {
+    closeUnexpectedPage(popup, '[videasy] closing popup').catch(() => undefined);
+  });
+
+  page.on('response', (response) => {
+    if (!isVideasyApiUrl(response.url())) {
+      return;
+    }
+
+    response.text()
+      .then((body) => rememberPayload(response.url(), response.status(), body))
+      .catch((error) => {
+        console.log(new Date().toISOString(), '[videasy:browser-api:error]', response.url(), error?.message || String(error));
+      });
+  });
 
   try {
-    await context.route('**/*sources-with-title*', async (route) => {
-      try {
-        const response = await route.fetch();
-        const body = await response.text();
+    await page.goto('https://player.videasy.net/', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    }).catch(() => undefined);
 
-        await route.fulfill({
-          response,
-          body,
-          headers: {
-            ...response.headers(),
-            'access-control-allow-origin': '*',
-            'access-control-allow-methods': 'GET, OPTIONS',
-            'access-control-allow-headers': '*'
-          }
-        });
-      } catch {
-        await route.abort().catch(() => undefined);
-      }
-    });
+    await page.waitForTimeout(1500).catch(() => undefined);
 
-    await page.goto(pageUrl, {
+    await page.goto(targetUrl, {
       waitUntil: 'domcontentloaded',
       timeout: 30000
     });
 
-    return await page.evaluate(async ({ sourceApiUrl, numericMediaId }) => {
-      const compiled = await WebAssembly.compileStreaming(fetch('https://player.videasy.net/module.wasm'));
-      const { exports } = await WebAssembly.instantiate(compiled, {
-        env: Object.assign(Object.create(globalThis), {
-          seed: () => Date.now() * Math.random(),
-          abort(message, file, line, column) {
-            throw new Error(`${message}:${file}:${line}:${column}`);
-          }
-        })
-      });
-      const memory = exports.memory;
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => undefined);
+    await page.waitForTimeout(2500).catch(() => undefined);
+    await primeVideasyPlayer(page, targetUrl).catch(() => undefined);
+    await page.waitForTimeout(3500).catch(() => undefined);
 
-      const readString = (ptr) => {
-        if (!ptr) {
-          return null;
-        }
+    const decodePayload = async (encryptedBody) => {
+      try {
+        return await decryptVideasyPayloadInPage(page, encryptedBody, mediaId);
+      } catch (error) {
+        console.log(new Date().toISOString(), '[videasy:browser-decrypt:fallback]', error?.message || String(error));
+        return await decryptVideasyPayload(encryptedBody, mediaId, targetUrl).catch(() => '');
+      }
+    };
 
-        const end = ptr + new Uint32Array(memory.buffer)[(ptr - 4) >>> 2] >>> 1;
-        const buffer = new Uint16Array(memory.buffer);
-        let cursor = ptr >>> 1;
-        let output = '';
-
-        while (end - cursor > 1024) {
-          output += String.fromCharCode(...buffer.subarray(cursor, cursor += 1024));
-        }
-
-        return output + String.fromCharCode(...buffer.subarray(cursor, end));
-      };
-
-      const writeString = (value) => {
-        const ptr = exports.__new(value.length << 1, 2) >>> 0;
-        const buffer = new Uint16Array(memory.buffer);
-
-        for (let index = 0; index < value.length; index += 1) {
-          buffer[(ptr >>> 1) + index] = value.charCodeAt(index);
-        }
-
-        return ptr;
-      };
-
-      Function(readString(exports.serve() >>> 0))();
-
-      const hash = await new Promise((resolve, reject) => {
-        const startedAt = Date.now();
-
-        const poll = () => {
-          if (window.hash) {
-            resolve(window.hash);
-            return;
-          }
-
-          if (Date.now() - startedAt > 10000) {
-            reject(new Error('VIDEASY_HASH_TIMEOUT'));
-            return;
-          }
-
-          setTimeout(poll, 25);
-        };
-
-        poll();
-      });
-
-      const response = await fetch(sourceApiUrl, {
-        credentials: 'omit',
-        mode: 'cors'
-      });
-      const encrypted = await response.text();
-
-      if (!response.ok || !encrypted) {
-        throw new Error(`VIDEASY_BROWSER_FETCH_${response.status || 0}`);
+    const getCapturedPayload = () => {
+      let preferredPath = '';
+      try {
+        preferredPath = new URL(apiUrl).pathname;
+      } catch {
+        preferredPath = '';
       }
 
-      if (!exports.verify(writeString(hash))) {
-        throw new Error('VIDEASY_HASH_VERIFY_FAILED');
+      return capturedPayloads.find((entry) => {
+        try {
+          return preferredPath && new URL(entry.url).pathname === preferredPath;
+        } catch {
+          return false;
+        }
+      }) || capturedPayloads.find((entry) => entry.url === apiUrl) || capturedPayloads[0] || null;
+    };
+
+    const captured = getCapturedPayload();
+    if (captured?.body) {
+      return await decodePayload(captured.body);
+    }
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const manualResult = await page.evaluate(async ({ sourceApiUrl }) => {
+        try {
+          const response = await fetch(sourceApiUrl, {
+            credentials: 'include',
+            mode: 'cors',
+            headers: {
+              accept: 'application/json, text/plain, */*',
+              'cache-control': 'no-cache',
+              pragma: 'no-cache'
+            }
+          });
+
+          return {
+            status: response.status,
+            body: await response.text(),
+            ok: response.ok
+          };
+        } catch (error) {
+          return {
+            status: 0,
+            body: '',
+            ok: false,
+            error: error?.message || String(error)
+          };
+        }
+      }, {
+        sourceApiUrl: String(apiUrl || '')
+      });
+
+      console.log(
+        new Date().toISOString(),
+        '[videasy:browser-fetch]',
+        manualResult.status,
+        apiUrl,
+        manualResult.error || String(manualResult.body || '').slice(0, 500)
+      );
+
+      if (manualResult.ok && manualResult.body && !isCloudflareBlockPage(manualResult.body)) {
+        return await decodePayload(manualResult.body);
       }
 
-      return readString(exports.decrypt(writeString(encrypted), numericMediaId) >>> 0) || '';
-    }, {
-      sourceApiUrl: String(apiUrl || ''),
-      numericMediaId: Number(mediaId)
-    });
+      const retriedCaptured = getCapturedPayload();
+      if (retriedCaptured?.body) {
+        return await decodePayload(retriedCaptured.body);
+      }
+
+      if (attempt === 0) {
+        await primeVideasyPlayer(page, targetUrl).catch(() => undefined);
+      } else if (attempt === 1) {
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => undefined);
+        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => undefined);
+      }
+
+      await page.waitForTimeout(2500).catch(() => undefined);
+    }
+
+    const finalCaptured = getCapturedPayload();
+    if (finalCaptured?.body) {
+      return await decodePayload(finalCaptured.body);
+    }
+
+    return '';
   } finally {
     await context.close().catch(() => undefined);
   }

@@ -36,6 +36,11 @@ function normalizeHeaders(headers = {}) {
   }, {});
 }
 
+function isCloudflareBlockPage(body = '') {
+  const snippet = String(body || '').slice(0, 4000);
+  return /attention required! \| cloudflare/i.test(snippet) || /just a moment/i.test(snippet) || /challenge-platform/i.test(snippet);
+}
+
 function sanitizePlaybackHeaders(headers = {}) {
   const allowed = new Set(['referer', 'origin', 'user-agent', 'range']);
   return Object.entries(normalizeHeaders(headers)).reduce((acc, [key, value]) => {
@@ -714,17 +719,32 @@ function buildVideasyResolveParams(details, metadata) {
 }
 
 function buildVideasyApiCandidates(details, params, userIp = '') {
-  const serialized = params.toString();
-  const candidates = [
-    `https://api.videasy.net/myflixerzupcloud/sources-with-title?${serialized}`,
-    `https://api.videasy.net/moviebox/sources-with-title?${serialized}`,
-    `https://api.videasy.net/1movies/sources-with-title?${serialized}`,
-    `https://api.videasy.net/cdn/sources-with-title?${serialized}`,
-    `https://api.videasy.net/primesrcme/sources-with-title?${serialized}`
+  const baseEntries = [
+    { endpoint: 'https://api.videasy.net/myflixerzupcloud/sources-with-title' },
+    { endpoint: 'https://api.videasy.net/moviebox/sources-with-title' },
+    { endpoint: 'https://api.videasy.net/1movies/sources-with-title' },
+    { endpoint: 'https://api.videasy.net/cdn/sources-with-title' },
+    { endpoint: 'https://api.videasy.net/hdmovie/sources-with-title' },
+    { endpoint: 'https://api.videasy.net/primesrcme/sources-with-title' },
+    { endpoint: 'https://api.videasy.net/m4uhd/sources-with-title' },
+    { endpoint: 'https://api.videasy.net/meine/sources-with-title', extraParams: { language: 'german' } }
   ];
 
+  const candidates = baseEntries.map(({ endpoint, extraParams = {} }) => {
+    const url = new URL(endpoint);
+    for (const [key, value] of params.entries()) {
+      url.searchParams.set(key, value);
+    }
+
+    for (const [key, value] of Object.entries(extraParams)) {
+      url.searchParams.set(key, value);
+    }
+
+    return url.toString();
+  });
+
   if (userIp) {
-    const api2Params = new URLSearchParams(serialized);
+    const api2Params = new URLSearchParams(params.toString());
     api2Params.set('userIp', userIp);
     candidates.push(`https://api2.videasy.net/primewire/sources-with-title?${api2Params.toString()}`);
   }
@@ -825,12 +845,12 @@ async function tryResolveVideasyDirect(sourceUrl) {
         }, videasySession);
 
         const encryptedBody = await upstream.text();
-        console.log(new Date().toISOString(), '[videasy] direct api', upstream.status, apiUrl);
+        console.log(new Date().toISOString(), '[videasy] direct api', upstream.status, apiUrl, isCloudflareBlockPage(encryptedBody) ? 'cloudflare-block' : '');
 
         let stageOne = '';
-        if (upstream.ok && encryptedBody) {
+        if (upstream.ok && encryptedBody && !isCloudflareBlockPage(encryptedBody)) {
           stageOne = await decryptVideasyPayload(encryptedBody, details.tmdbId, sourceUrl);
-        } else if (upstream.status === 403) {
+        } else if (upstream.status === 403 || isCloudflareBlockPage(encryptedBody)) {
           stageOne = await resolveVideasyPayloadInBrowser(apiUrl, details.tmdbId, sourceUrl);
         } else {
           continue;

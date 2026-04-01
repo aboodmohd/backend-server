@@ -59,14 +59,18 @@ function isVideasyUrl(url) {
   return /player\.videasy\.net/i.test(String(url || ''));
 }
 
-function shouldBlockVideasyScript(targetUrl, request) {
-  if (!isVideasyUrl(targetUrl) || request.resourceType() !== 'script') {
+function shouldBlockVideasyNavigation(targetUrl, request) {
+  if (!isVideasyUrl(targetUrl)) {
+    return false;
+  }
+
+  if (request.resourceType() !== 'document' || !request.isNavigationRequest()) {
     return false;
   }
 
   try {
-    const parsed = new URL(request.url());
-    return !['player.videasy.net', 'users.videasy.net', 'api.videasy.net', 'db.videasy.net'].includes(parsed.hostname);
+    const hostname = new URL(request.url()).hostname;
+    return !/(^|\.)videasy\.net$/i.test(hostname);
   } catch {
     return false;
   }
@@ -168,14 +172,14 @@ export async function setupInterceptors(page, targetUrl, onFound) {
       return;
     }
 
-    if (shouldBlockVidfastScript(targetUrl, request)) {
-      console.log(new Date().toISOString(), '[vidfast] blocked script', url);
+    if (shouldBlockVideasyNavigation(targetUrl, request)) {
+      console.log(new Date().toISOString(), '[videasy] blocked navigation', url);
       await route.abort().catch(() => undefined);
       return;
     }
 
-    if (shouldBlockVideasyScript(targetUrl, request)) {
-      console.log(new Date().toISOString(), '[videasy] blocked script', url);
+    if (shouldBlockVidfastScript(targetUrl, request)) {
+      console.log(new Date().toISOString(), '[vidfast] blocked script', url);
       await route.abort().catch(() => undefined);
       return;
     }
