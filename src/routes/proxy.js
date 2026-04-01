@@ -55,7 +55,7 @@ function parseEmbeddedHost(targetUrl) {
       return '';
     }
 
-    return new URL(embeddedHost).host;
+    return embeddedHost.includes('://') ? new URL(embeddedHost).host : embeddedHost;
   } catch {
     return '';
   }
@@ -69,7 +69,7 @@ function parseEmbeddedHostUrl(targetUrl) {
       return null;
     }
 
-    return new URL(embeddedHost);
+    return new URL(embeddedHost.includes('://') ? embeddedHost : `https://${embeddedHost}`);
   } catch {
     return null;
   }
