@@ -3,12 +3,12 @@ import { detectType } from '../src/interceptors/index.js';
 import { decryptVideasyPayload, getVideasySession, resolveVideasyPayloadInBrowser } from '../src/workers/playwright.js';
 
 const VIDEASY_PROVIDERS = [
-  'myflixerzupcloud',
-  'moviebox',
-  'primewire',
-  'hdmovie',
-  'm4uhd',
-  '1movies',
+  { id: 'myflixerzupcloud', endpoint: 'https://api.videasy.net/myflixerzupcloud/sources-with-title' },
+  { id: 'moviebox', endpoint: 'https://api.videasy.net/moviebox/sources-with-title' },
+  { id: 'primewire', endpoint: 'https://api2.videasy.net/primewire/sources-with-title', needsUserIp: true },
+  { id: 'hdmovie', endpoint: 'https://api.videasy.net/cdn/sources-with-title' },
+  { id: 'm4uhd', endpoint: 'https://api.videasy.net/primesrcme/sources-with-title' },
+  { id: '1movies', endpoint: 'https://api.videasy.net/1movies/sources-with-title' },
 ];
 
 const REQUEST_TIMEOUT_MS = 5000;
@@ -25,6 +25,15 @@ function withTimeout(ms = REQUEST_TIMEOUT_MS) {
     signal: controller.signal,
     clear: () => clearTimeout(timer),
   };
+}
+
+async function withOperationTimeout(task, ms = REQUEST_TIMEOUT_MS) {
+  return await Promise.race([
+    task(),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('provider timeout')), ms);
+    }),
+  ]);
 }
 
 async function fetchTextWithTimeout(url, options = {}) {
@@ -137,8 +146,8 @@ function buildQualityList(payload) {
     }));
 }
 
-function buildProviderUrl(provider, query) {
-  const url = new URL(`https://api.videasy.net/${provider}/sources-with-title`);
+function buildProviderUrl(provider, query, userIp = '') {
+  const url = new URL(provider.endpoint);
   url.searchParams.set('title', encodeURIComponent(query.title));
   url.searchParams.set('mediaType', query.mediaType);
   url.searchParams.set('year', String(query.year));
@@ -155,7 +164,16 @@ function buildProviderUrl(provider, query) {
     url.searchParams.set('episodeId', String(query.episode));
   }
 
+  if (provider.needsUserIp && userIp) {
+    url.searchParams.set('userIp', userIp);
+  }
+
   return url.toString();
+}
+
+async function getUserIp(headers) {
+  const response = await fetchTextWithTimeout('https://api4.ipify.org', { headers });
+  return response.ok ? String(response.text || '').trim() : '';
 }
 
 export async function normalizeVideasyQuery(input) {
@@ -224,53 +242,60 @@ export async function resolveVideasySource(input) {
   const playbackUrl = buildPlaybackUrl(query);
   const session = await getVideasySession(playbackUrl).catch(() => null);
   const headers = buildHeaders(session);
+  const userIp = await getUserIp(headers).catch(() => '');
 
   for (const provider of VIDEASY_PROVIDERS) {
     try {
-      const providerUrl = buildProviderUrl(provider, query);
-      const upstream = await fetchTextWithTimeout(providerUrl, { headers });
+      const providerUrl = buildProviderUrl(provider, query, userIp);
+      const result = await withOperationTimeout(async () => {
+        const upstream = await fetchTextWithTimeout(providerUrl, { headers });
 
-      if (!upstream.text) {
-        continue;
+        if (!upstream.text) {
+          return null;
+        }
+
+        let stageOne = '';
+
+        if (upstream.ok) {
+          stageOne = await decryptVideasyPayload(upstream.text, query.tmdbId, playbackUrl).catch(() => '');
+        } else if (upstream.status === 403) {
+          stageOne = await resolveVideasyPayloadInBrowser(providerUrl, query.tmdbId, playbackUrl).catch(() => '');
+        }
+
+        if (!stageOne) {
+          return null;
+        }
+
+        const payload = decodePayload(stageOne);
+        const stream = pickBestStream(payload);
+        if (!stream?.url) {
+          return null;
+        }
+
+        return {
+          provider: provider.id,
+          quality: normalizeQualityLabel(stream.quality),
+          stream: stream.url,
+          url: stream.url,
+          type: detectType(stream.url),
+          headers: {
+            origin: VIDEASY_ORIGIN,
+            referer: `${VIDEASY_ORIGIN}/`,
+            'user-agent': headers['user-agent'],
+          },
+          qualities: buildQualityList(payload),
+        };
+      });
+
+      if (result?.stream) {
+        return result;
       }
-
-      let stageOne = '';
-
-      if (upstream.ok) {
-        stageOne = await decryptVideasyPayload(upstream.text, query.tmdbId, playbackUrl).catch(() => '');
-      } else if (upstream.status === 403) {
-        stageOne = await resolveVideasyPayloadInBrowser(providerUrl, query.tmdbId, playbackUrl).catch(() => '');
-      }
-
-      if (!stageOne) {
-        continue;
-      }
-
-      const payload = decodePayload(stageOne);
-      const stream = pickBestStream(payload);
-      if (!stream?.url) {
-        continue;
-      }
-
-      return {
-        provider,
-        quality: normalizeQualityLabel(stream.quality),
-        stream: stream.url,
-        url: stream.url,
-        type: detectType(stream.url),
-        headers: {
-          origin: VIDEASY_ORIGIN,
-          referer: `${VIDEASY_ORIGIN}/`,
-          'user-agent': headers['user-agent'],
-        },
-        qualities: buildQualityList(payload),
-      };
     } catch (error) {
-      console.log(new Date().toISOString(), '[videasy]', provider, error?.message || String(error));
+      console.log(new Date().toISOString(), '[videasy]', provider.id, error?.message || String(error));
     }
   }
 
   throw new Error('No stream found from Videasy providers');
 }
 
-export { VIDEASY_PROVIDERS };
+export const VIDEASY_PROVIDER_IDS = VIDEASY_PROVIDERS.map((provider) => provider.id);
