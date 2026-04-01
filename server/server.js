@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { createMemoryCache } from './cache.js';
-import { getVideasyCacheKey, resolveVideasySource } from './providers.js';
+import { getVideasyCacheKey } from './providers.js';
+import { buildVideasyPlaybackUrl, resolveStream } from '../src/routes/resolve.js';
 
 const router = Router();
 const cache = createMemoryCache();
@@ -72,7 +73,8 @@ router.get('/', async (req, res) => {
       return res.json(cached);
     }
 
-    const result = await resolveVideasySource(query);
+    const playbackUrl = buildVideasyPlaybackUrl(query);
+    const result = await resolveStream(playbackUrl);
     const proxiedResult = proxyVideasyResult(req, result);
     cache.set(cacheKey, proxiedResult);
     return res.json(proxiedResult);

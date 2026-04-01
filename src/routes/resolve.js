@@ -628,6 +628,32 @@ function parseVideasySourceUrl(sourceUrl) {
   return null;
 }
 
+export function buildVideasyPlaybackUrl({ mediaType, tmdbId, season, episode }) {
+  const normalizedMediaType = String(mediaType || '').trim().toLowerCase();
+  const normalizedTmdbId = String(tmdbId || '').trim();
+
+  if (!normalizedTmdbId) {
+    throw new Error('tmdbId is required');
+  }
+
+  if (normalizedMediaType === 'movie') {
+    return `https://player.videasy.net/movie/${normalizedTmdbId}`;
+  }
+
+  if (normalizedMediaType === 'tv') {
+    const normalizedSeason = String(season || '').trim();
+    const normalizedEpisode = String(episode || '').trim();
+
+    if (!normalizedSeason || !normalizedEpisode) {
+      throw new Error('season and episode are required for tv');
+    }
+
+    return `https://player.videasy.net/tv/${normalizedTmdbId}/${normalizedSeason}/${normalizedEpisode}`;
+  }
+
+  throw new Error('mediaType must be movie or tv');
+}
+
 function parseVidkingSourceUrl(sourceUrl) {
   try {
     const parsed = new URL(sourceUrl);
@@ -1177,7 +1203,7 @@ async function tryResolveVidfastFromHints(sourceUrl) {
   return null;
 }
 
-async function resolveStream(url) {
+export async function resolveStream(url) {
   if (isVidfastUrl(url)) {
     const directResult = await tryResolveVidfastFromHints(url);
     if (directResult) {
