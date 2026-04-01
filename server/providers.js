@@ -27,15 +27,6 @@ function withTimeout(ms = REQUEST_TIMEOUT_MS) {
   };
 }
 
-async function withOperationTimeout(task, ms = REQUEST_TIMEOUT_MS) {
-  return await Promise.race([
-    task(),
-    new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('provider timeout')), ms);
-    }),
-  ]);
-}
-
 async function fetchTextWithTimeout(url, options = {}) {
   const { signal, clear } = withTimeout();
 
@@ -247,45 +238,43 @@ export async function resolveVideasySource(input) {
   for (const provider of VIDEASY_PROVIDERS) {
     try {
       const providerUrl = buildProviderUrl(provider, query, userIp);
-      const result = await withOperationTimeout(async () => {
-        const upstream = await fetchTextWithTimeout(providerUrl, { headers });
+      const upstream = await fetchTextWithTimeout(providerUrl, { headers });
 
-        if (!upstream.text) {
-          return null;
-        }
+      if (!upstream.text) {
+        continue;
+      }
 
-        let stageOne = '';
+      let stageOne = '';
 
-        if (upstream.ok) {
-          stageOne = await decryptVideasyPayload(upstream.text, query.tmdbId, playbackUrl).catch(() => '');
-        } else if (upstream.status === 403) {
-          stageOne = await resolveVideasyPayloadInBrowser(providerUrl, query.tmdbId, playbackUrl).catch(() => '');
-        }
+      if (upstream.ok) {
+        stageOne = await decryptVideasyPayload(upstream.text, query.tmdbId, playbackUrl).catch(() => '');
+      } else if (upstream.status === 403) {
+        stageOne = await resolveVideasyPayloadInBrowser(providerUrl, query.tmdbId, playbackUrl).catch(() => '');
+      }
 
-        if (!stageOne) {
-          return null;
-        }
+      if (!stageOne) {
+        continue;
+      }
 
-        const payload = decodePayload(stageOne);
-        const stream = pickBestStream(payload);
-        if (!stream?.url) {
-          return null;
-        }
+      const payload = decodePayload(stageOne);
+      const stream = pickBestStream(payload);
+      if (!stream?.url) {
+        continue;
+      }
 
-        return {
-          provider: provider.id,
-          quality: normalizeQualityLabel(stream.quality),
-          stream: stream.url,
-          url: stream.url,
-          type: detectType(stream.url),
-          headers: {
-            origin: VIDEASY_ORIGIN,
-            referer: `${VIDEASY_ORIGIN}/`,
-            'user-agent': headers['user-agent'],
-          },
-          qualities: buildQualityList(payload),
-        };
-      });
+      const result = {
+        provider: provider.id,
+        quality: normalizeQualityLabel(stream.quality),
+        stream: stream.url,
+        url: stream.url,
+        type: detectType(stream.url),
+        headers: {
+          origin: VIDEASY_ORIGIN,
+          referer: `${VIDEASY_ORIGIN}/`,
+          'user-agent': headers['user-agent'],
+        },
+        qualities: buildQualityList(payload),
+      };
 
       if (result?.stream) {
         return result;
