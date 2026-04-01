@@ -873,18 +873,19 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       headers: request.headers()
     });
 
-    if (!isVidkingUrl(targetUrl) || stopIfResolved()) {
+    if ((!isVidkingUrl(targetUrl) && !isVideasyUrl(targetUrl)) || stopIfResolved()) {
       return;
     }
 
     if (isLikelyStreamUrl(requestUrl)) {
-      console.log(new Date().toISOString(), '[vidking:request-media]', resourceType, requestUrl);
+      const via = isVideasyUrl(targetUrl) ? 'videasy-request' : 'vidking-request';
+      console.log(new Date().toISOString(), `[${via}:media]`, resourceType, requestUrl);
       emitFound({
         url: requestUrl,
         type: detectType(requestUrl, request.headers()['content-type'] || ''),
         headers: request.headers(),
         foundAt: new Date().toISOString(),
-        via: 'vidking-request'
+        via
       }).catch(() => undefined);
     }
   });
@@ -894,6 +895,24 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   });
 
   page.on('response', async (response) => {
+    if (isVideasyUrl(targetUrl)) {
+      const responseUrl = response.url();
+      if (isLikelyStreamUrl(responseUrl) && !stopIfResolved()) {
+        console.log(new Date().toISOString(), '[videasy:response-media]', response.status(), responseUrl);
+        await emitFound({
+          url: responseUrl,
+          type: detectType(responseUrl, response.headers()['content-type'] || ''),
+          headers: {
+            ...response.request().headers(),
+            ...response.headers()
+          },
+          foundAt: new Date().toISOString(),
+          via: 'videasy-response'
+        }).catch(() => undefined);
+        return;
+      }
+    }
+
     if (isVidkingUrl(targetUrl)) {
       const responseUrl = response.url();
       if (isLikelyStreamUrl(responseUrl) && !stopIfResolved()) {
@@ -1099,7 +1118,7 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 
       const videasyForbiddenCount = videasyApiStatuses.filter((entry) => entry.status === 403).length;
       if (videasyForbiddenCount >= 3) {
-        throw new Error('VIDEASY_UPSTREAM_FORBIDDEN');
+        console.log(new Date().toISOString(), '[videasy] upstream api blocked, continuing browser media capture');
       }
     }
 
