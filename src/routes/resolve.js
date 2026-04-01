@@ -16,9 +16,12 @@ const SIX_HOURS_MS = 6 * ONE_HOUR_MS;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 const RESOLVE_TIMEOUT_MS = Number(process.env.RESOLVE_TIMEOUT_MS || 30000);
 const PLAYLIST_FETCH_TIMEOUT_MS = Number(process.env.PLAYLIST_FETCH_TIMEOUT_MS || 8000);
+const DIRECT_PROVIDER_FETCH_TIMEOUT_MS = Number(process.env.DIRECT_PROVIDER_FETCH_TIMEOUT_MS || 5000);
 const VIDNEST_DECRYPT_ALPHABET = 'RB0fpH8ZEyVLkv7c2i6MAJ5u3IKFDxlS1NTsnGaqmXYdUrtzjwObCgQP94hoeW+/';
 const VIDZEE_KEY_SECRET = '7c9e2b4a1f6d8a3e5';
 const VIDZEE_SERVER_IDS = ['0', '1', '2', '3', '7', '6', '8', '9', '10', '11', '12'];
+const EMBEDDED_HEADERS_PARAM = '__proxy_headers';
+const EMBEDDED_HOST_PARAM = '__proxy_host';
 const videasyProxyUrl = process.env.VIDEASY_PROXY_URL || process.env.RESIDENTIAL_PROXY_URL || '';
 const videasyProxyAgent = videasyProxyUrl ? new ProxyAgent(videasyProxyUrl) : null;
 const playbackProxyUrl = process.env.PLAYBACK_PROXY_URL || process.env.RESIDENTIAL_PROXY_URL || '';
@@ -132,7 +135,7 @@ function buildAbsolutePlaylistUrl(playlistUrl, candidatePath) {
   const resolved = new URL(candidatePath, playlistUrl);
   const base = new URL(playlistUrl);
 
-  for (const key of ['headers', 'host']) {
+  for (const key of [EMBEDDED_HEADERS_PARAM, EMBEDDED_HOST_PARAM, 'headers', 'host']) {
     if (!resolved.searchParams.has(key) && base.searchParams.has(key)) {
       resolved.searchParams.set(key, base.searchParams.get(key));
     }
@@ -151,7 +154,7 @@ function shouldProxyPlaybackUrl(targetUrl, headers = {}, type = '') {
 
   try {
     const parsed = new URL(String(targetUrl || ''));
-    return Boolean(Object.keys(normalizedHeaders).length || parsed.searchParams.has('headers') || parsed.searchParams.has('host'));
+    return Boolean(Object.keys(normalizedHeaders).length || parsed.searchParams.has(EMBEDDED_HEADERS_PARAM) || parsed.searchParams.has(EMBEDDED_HOST_PARAM));
   } catch {
     return Boolean(Object.keys(normalizedHeaders).length);
   }
@@ -170,7 +173,7 @@ function buildProxyPlaybackUrl(proxyBaseUrl, targetUrl, headers = {}) {
 
   try {
     const parsedTarget = new URL(targetUrl);
-    if (parsedTarget.searchParams.has('headers')) {
+    if (parsedTarget.searchParams.has(EMBEDDED_HEADERS_PARAM)) {
       delete headerOverrides.referer;
       delete headerOverrides.origin;
     }
@@ -744,6 +747,7 @@ function pickVideasySource(payload) {
 }
 
 async function fetchVideasyUrl(url, options = {}, session = null) {
+  const { signal, done } = withTimeout(DIRECT_PROVIDER_FETCH_TIMEOUT_MS);
   const headers = {
     ...(options.headers || {})
   };
@@ -756,11 +760,16 @@ async function fetchVideasyUrl(url, options = {}, session = null) {
     headers.cookie = session.cookieHeader;
   }
 
-  return fetch(url, {
-    ...options,
-    headers,
-    ...(videasyProxyAgent ? { dispatcher: videasyProxyAgent } : {})
-  });
+  try {
+    return await fetch(url, {
+      ...options,
+      headers,
+      signal,
+      ...(videasyProxyAgent ? { dispatcher: videasyProxyAgent } : {})
+    });
+  } finally {
+    done();
+  }
 }
 
 async function tryResolveVideasyDirect(sourceUrl) {

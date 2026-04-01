@@ -4,6 +4,8 @@ import { ProxyAgent } from 'undici';
 const router = Router();
 const playbackProxyUrl = process.env.PLAYBACK_PROXY_URL || process.env.RESIDENTIAL_PROXY_URL || '';
 const playbackProxyAgent = playbackProxyUrl ? new ProxyAgent(playbackProxyUrl) : null;
+const EMBEDDED_HEADERS_PARAM = '__proxy_headers';
+const EMBEDDED_HOST_PARAM = '__proxy_host';
 
 function normalizeHeaders(headers = {}) {
   return Object.entries(headers).reduce((acc, [key, value]) => {
@@ -27,7 +29,7 @@ function filterForwardHeaders(headers = {}) {
 function parseEmbeddedHeaders(targetUrl) {
   try {
     const parsed = new URL(targetUrl);
-    const embedded = parsed.searchParams.get('headers');
+    const embedded = parsed.searchParams.get(EMBEDDED_HEADERS_PARAM);
     if (!embedded) {
       return {};
     }
@@ -41,7 +43,7 @@ function parseEmbeddedHeaders(targetUrl) {
 function hasEmbeddedProxyParams(targetUrl) {
   try {
     const parsed = new URL(targetUrl);
-    return parsed.searchParams.has('headers') || parsed.searchParams.has('host');
+    return parsed.searchParams.has(EMBEDDED_HEADERS_PARAM) || parsed.searchParams.has(EMBEDDED_HOST_PARAM);
   } catch {
     return false;
   }
@@ -50,7 +52,7 @@ function hasEmbeddedProxyParams(targetUrl) {
 function parseEmbeddedHost(targetUrl) {
   try {
     const parsed = new URL(targetUrl);
-    const embeddedHost = parsed.searchParams.get('host');
+    const embeddedHost = parsed.searchParams.get(EMBEDDED_HOST_PARAM);
     if (!embeddedHost) {
       return '';
     }
@@ -64,7 +66,7 @@ function parseEmbeddedHost(targetUrl) {
 function parseEmbeddedHostUrl(targetUrl) {
   try {
     const parsed = new URL(targetUrl);
-    const embeddedHost = parsed.searchParams.get('host');
+    const embeddedHost = parsed.searchParams.get(EMBEDDED_HOST_PARAM);
     if (!embeddedHost) {
       return null;
     }
@@ -77,8 +79,8 @@ function parseEmbeddedHostUrl(targetUrl) {
 
 function stripEmbeddedProxyParams(targetUrl) {
   const parsed = new URL(targetUrl);
-  parsed.searchParams.delete('headers');
-  parsed.searchParams.delete('host');
+  parsed.searchParams.delete(EMBEDDED_HEADERS_PARAM);
+  parsed.searchParams.delete(EMBEDDED_HOST_PARAM);
   return parsed.toString();
 }
 
@@ -97,7 +99,7 @@ function buildAbsolutePlaylistUrl(playlistUrl, candidatePath) {
   const resolved = new URL(candidatePath, playlistUrl);
   const base = new URL(playlistUrl);
 
-  for (const key of ['headers', 'host']) {
+  for (const key of [EMBEDDED_HEADERS_PARAM, EMBEDDED_HOST_PARAM, 'headers', 'host']) {
     if (!resolved.searchParams.has(key) && base.searchParams.has(key)) {
       resolved.searchParams.set(key, base.searchParams.get(key));
     }
