@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Videasy Player Demo</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: #0b1020;
+        color: #f5f7ff;
+      }
+
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      form {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        margin-bottom: 24px;
+      }
+
+      input,
+      select,
+      button {
+        padding: 12px;
+        border-radius: 10px;
+        border: 1px solid #2d3556;
+        background: #121935;
+        color: inherit;
+      }
+
+      button {
+        cursor: pointer;
+        background: #4f7cff;
+        border: 0;
+      }
+
+      video {
+        width: 100%;
+        border-radius: 16px;
+        background: #000;
+      }
+
+      #status {
+        min-height: 24px;
+        margin: 12px 0;
+        color: #a9b4d0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Videasy HLS Demo</h1>
+      <form id="player-form">
+        <input name="title" placeholder="Title" value="Avengers: Endgame" />
+        <input name="year" placeholder="Year" type="number" value="2019" />
+        <input name="tmdbId" placeholder="TMDB ID" type="number" value="299534" />
+        <input name="imdbId" placeholder="IMDb ID" value="tt4154796" />
+        <select name="mediaType">
+          <option value="movie">Movie</option>
+          <option value="tv">TV</option>
+        </select>
+        <input name="season" placeholder="Season" type="number" value="1" />
+        <input name="episode" placeholder="Episode" type="number" value="1" />
+        <button type="submit">Load Stream</button>
+      </form>
+      <div id="status"></div>
+      <video id="video" controls playsinline></video>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script type="module" src="./player.js"></script>
+  </body>
+</html>
