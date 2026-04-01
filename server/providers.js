@@ -1,6 +1,6 @@
 import CryptoJS from 'crypto-js';
 import { detectType } from '../src/interceptors/index.js';
-import { decryptVideasyPayload, getVideasySession, resolveVideasyPayloadInBrowser } from '../src/workers/playwright.js';
+import { decryptVideasyPayload, extractVideoUrls, getVideasySession, resolveVideasyPayloadInBrowser } from '../src/workers/playwright.js';
 
 const VIDEASY_PROVIDERS = [
   { id: 'myflixerzupcloud', endpoint: 'https://api.videasy.net/myflixerzupcloud/sources-with-title' },
@@ -228,6 +228,40 @@ export function getVideasyCacheKey(query) {
     : `${query.tmdbId}:movie`;
 }
 
+async function resolveVideasyInBrowser(playbackUrl) {
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+
+    extractVideoUrls(
+      playbackUrl,
+      (result) => {
+        if (settled || !result?.url) {
+          return;
+        }
+
+        settled = true;
+        resolve(result);
+      },
+      {
+        navigationTimeout: 30000,
+        maxWaitAfterLoad: 20000,
+        minWaitAfterLoad: 5000,
+        settleTimeout: 2500,
+      }
+    ).then(() => {
+      if (!settled) {
+        settled = true;
+        reject(new Error('VIDEASY_BROWSER_NO_STREAM'));
+      }
+    }).catch((error) => {
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    });
+  });
+}
+
 export async function resolveVideasySource(input) {
   const query = await normalizeVideasyQuery(input);
   const playbackUrl = buildPlaybackUrl(query);
@@ -282,6 +316,33 @@ export async function resolveVideasySource(input) {
     } catch (error) {
       console.log(new Date().toISOString(), '[videasy]', provider.id, error?.message || String(error));
     }
+  }
+
+  const browserResult = await resolveVideasyInBrowser(playbackUrl).catch((error) => {
+    console.log(new Date().toISOString(), '[videasy] browser fallback', error?.message || String(error));
+    return null;
+  });
+
+  if (browserResult?.url) {
+    return {
+      provider: 'videasy-browser',
+      quality: normalizeQualityLabel(browserResult.quality || browserResult.label || ''),
+      stream: browserResult.url,
+      url: browserResult.url,
+      type: browserResult.type || detectType(browserResult.url),
+      headers: {
+        origin: VIDEASY_ORIGIN,
+        referer: `${VIDEASY_ORIGIN}/`,
+        'user-agent': headers['user-agent'],
+        ...Object.entries(browserResult.headers || {}).reduce((acc, [key, value]) => {
+          if (typeof value === 'string' && value) {
+            acc[String(key).toLowerCase()] = value;
+          }
+          return acc;
+        }, {}),
+      },
+      qualities: [],
+    };
   }
 
   throw new Error('No stream found from Videasy providers');
