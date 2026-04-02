@@ -20,6 +20,7 @@ const DIRECT_PROVIDER_FETCH_TIMEOUT_MS = Number(process.env.DIRECT_PROVIDER_FETC
 const VIDNEST_DECRYPT_ALPHABET = 'RB0fpH8ZEyVLkv7c2i6MAJ5u3IKFDxlS1NTsnGaqmXYdUrtzjwObCgQP94hoeW+/';
 const VIDZEE_KEY_SECRET = '7c9e2b4a1f6d8a3e5';
 const VIDZEE_SERVER_IDS = ['0', '1', '2', '3', '7', '6', '8', '9', '10', '11', '12'];
+const VIDROCK_ENCRYPTION_KEY = 'x7k9mPqT2rWvY8zA5bC3nF6hJ2lK4mN9';
 const EMBEDDED_HEADERS_PARAM = '__proxy_headers';
 const EMBEDDED_HOST_PARAM = '__proxy_host';
 const VIDEASY_UPSTREAM_BLOCKED = 'VIDEASY_UPSTREAM_BLOCKED';
@@ -452,6 +453,10 @@ function isVidzeeUrl(url) {
   return /player\.vidzee\.wtf\/v2\/embed\//i.test(String(url || ''));
 }
 
+function isVidrockUrl(url) {
+  return /vidrock\.net\/(?:embed\/)?(?:movie|tv)\//i.test(String(url || ''));
+}
+
 function isVidkingUrl(url) {
   return /www\.vidking\.net\/embed\//i.test(String(url || ''));
 }
@@ -461,6 +466,7 @@ function getProviderKeyFromUrl(url) {
   if (isVidnestUrl(url)) return 'vidnest';
   if (isVideasyUrl(url)) return 'videasy';
   if (isVidzeeUrl(url)) return 'vidzee';
+  if (isVidrockUrl(url)) return 'vidrock';
   if (isVidkingUrl(url)) return 'vidking';
   return null;
 }
@@ -611,6 +617,108 @@ function parseVidzeeEmbedUrl(url) {
   }
 
   return null;
+}
+
+function parseVidrockSourceUrl(sourceUrl) {
+  try {
+    const parsed = new URL(sourceUrl);
+    if (parsed.hostname !== 'vidrock.net') {
+      return null;
+    }
+
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    const offset = parts[0] === 'embed' ? 1 : 0;
+
+    if (parts[offset] === 'movie' && parts[offset + 1]) {
+      return {
+        mediaType: 'movie',
+        tmdbId: parts[offset + 1]
+      };
+    }
+
+    if (parts[offset] === 'tv' && parts[offset + 1] && parts[offset + 2] && parts[offset + 3]) {
+      return {
+        mediaType: 'tv',
+        tmdbId: parts[offset + 1],
+        seasonId: parts[offset + 2],
+        episodeId: parts[offset + 3]
+      };
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function buildVidrockToken(details) {
+  const plaintext = details.mediaType === 'tv'
+    ? `${details.tmdbId}_${details.seasonId}_${details.episodeId}`
+    : `${details.tmdbId}`;
+
+  const encrypted = CryptoJS.AES.encrypt(
+    plaintext,
+    CryptoJS.enc.Utf8.parse(VIDROCK_ENCRYPTION_KEY),
+    {
+      iv: CryptoJS.enc.Utf8.parse(VIDROCK_ENCRYPTION_KEY.slice(0, 16)),
+      mode: CryptoJS.mode.CBC,
+      padding: CryptoJS.pad.Pkcs7
+    }
+  );
+
+  return encrypted.ciphertext
+    .toString(CryptoJS.enc.Base64)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function getVidrockHeaders(sourceUrl) {
+  return {
+    accept: 'application/json, text/plain, */*',
+    'accept-language': 'en-US,en;q=0.9',
+    origin: 'https://vidrock.net',
+    referer: sourceUrl,
+    'user-agent':
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
+      'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+      'Chrome/145.0.0.0 Safari/537.36'
+  };
+}
+
+function rankVidrockSource(entry = {}) {
+  const url = String(entry.url || '');
+  if (/workers\.dev/i.test(url) || /\.m3u8(\?|$)/i.test(url)) return 4;
+  if (/playlist/i.test(url)) return 3;
+  if (/^https?:\/\//i.test(url)) return 2;
+  return 0;
+}
+
+function extractVidrockSources(payload = {}) {
+  return Object.entries(payload)
+    .map(([name, entry]) => ({
+      name,
+      url: entry?.url || '',
+      language: entry?.language || '',
+      flag: entry?.flag || ''
+    }))
+    .filter((entry) => typeof entry.url === 'string' && entry.url.startsWith('http'))
+    .sort((left, right) => rankVidrockSource(right) - rankVidrockSource(left));
+}
+
+function buildVidrockQualityEntries(entries = []) {
+  return dedupeQualities(
+    entries
+      .filter((entry) => typeof entry?.url === 'string' && entry.url.startsWith('http'))
+      .map((entry) => ({
+        label: normalizeQualityLabel(entry.resolution || entry.quality || entry.label || entry.name),
+        quality: normalizeQualityLabel(entry.resolution || entry.quality || entry.label || entry.name),
+        url: entry.url,
+        type: detectType(entry.url),
+        isDefault: false
+      }))
+      .filter((entry) => entry.label)
+  );
 }
 
 function parseVideasySourceUrl(sourceUrl) {
@@ -1085,6 +1193,114 @@ async function tryResolveVidnestDirect(sourceUrl) {
   return null;
 }
 
+async function tryResolveVidrockDirect(sourceUrl) {
+  const details = parseVidrockSourceUrl(sourceUrl);
+  if (!details) {
+    return null;
+  }
+
+  const token = buildVidrockToken(details);
+  const endpoint = details.mediaType === 'tv' ? 'tv' : 'movie';
+  const apiUrl = `https://vidrock.net/api/${endpoint}/${encodeURIComponent(token)}`;
+
+  try {
+    const response = await fetch(apiUrl, {
+      headers: getVidrockHeaders(sourceUrl)
+    });
+
+    if (!response.ok) {
+      console.log(new Date().toISOString(), '[vidrock] direct api failed', response.status, apiUrl);
+      return null;
+    }
+
+    const payload = await response.json();
+    const sources = extractVidrockSources(payload);
+
+    for (const source of sources) {
+      try {
+        if (/\.m3u8(\?|$)/i.test(source.url)) {
+          return attachQualities({
+            success: true,
+            url: source.url,
+            stream: source.url,
+            type: 'HLS',
+            headers: normalizeHeaders(getVidrockHeaders(sourceUrl)),
+            provider: 'vidrock',
+            sourceUrl,
+            qualities: []
+          });
+        }
+
+        const { signal, done } = withTimeout(DIRECT_PROVIDER_FETCH_TIMEOUT_MS * 2);
+
+        try {
+          const upstream = await fetch(source.url, {
+            headers: getVidrockHeaders(sourceUrl),
+            signal
+          });
+
+          if (!upstream.ok) {
+            continue;
+          }
+
+          const contentType = upstream.headers.get('content-type') || '';
+
+          if (/json/i.test(contentType)) {
+            const qualityPayload = await upstream.json().catch(() => null);
+            const sourceCandidates = buildVidrockQualityEntries(Array.isArray(qualityPayload) ? qualityPayload : []);
+            if (sourceCandidates.length) {
+              return attachQualities({
+                success: true,
+                url: sourceCandidates[0].url,
+                stream: sourceCandidates[0].url,
+                type: sourceCandidates[0].type || 'HLS',
+                headers: normalizeHeaders(getVidrockHeaders(sourceUrl)),
+                provider: 'vidrock',
+                sourceUrl,
+                qualities: []
+              }, sourceCandidates);
+            }
+          }
+
+          if (/mpegurl|application\/x-mpegurl|application\/vnd\.apple\.mpegurl/i.test(contentType)) {
+            return attachQualities({
+              success: true,
+              url: source.url,
+              stream: source.url,
+              type: 'HLS',
+              headers: normalizeHeaders(getVidrockHeaders(sourceUrl)),
+              provider: 'vidrock',
+              sourceUrl,
+              qualities: []
+            });
+          }
+
+          if (/video\//i.test(contentType)) {
+            return attachQualities({
+              success: true,
+              url: source.url,
+              stream: source.url,
+              type: detectType(source.url, contentType),
+              headers: normalizeHeaders(getVidrockHeaders(sourceUrl)),
+              provider: 'vidrock',
+              sourceUrl,
+              qualities: []
+            });
+          }
+        } finally {
+          done();
+        }
+      } catch (error) {
+        console.log(new Date().toISOString(), '[vidrock] source probe failed', source.name, source.url, error?.message || String(error));
+      }
+    }
+  } catch (error) {
+    console.log(new Date().toISOString(), '[vidrock] direct resolve failed', sourceUrl, error?.message || String(error));
+  }
+
+  return null;
+}
+
 async function getVidzeeApiKey() {
   const cached = vidzeeKeyCache.get('vidzee:api-key');
   if (cached) {
@@ -1278,6 +1494,14 @@ export async function resolveStream(url) {
     const directResult = await tryResolveVidnestDirect(url).catch(() => null);
     if (directResult) {
       console.log(new Date().toISOString(), '[resolve] vidnest direct success', directResult.url);
+      return directResult;
+    }
+  }
+
+  if (isVidrockUrl(url)) {
+    const directResult = await tryResolveVidrockDirect(url).catch(() => null);
+    if (directResult) {
+      console.log(new Date().toISOString(), '[resolve] vidrock direct success', directResult.url);
       return directResult;
     }
   }
