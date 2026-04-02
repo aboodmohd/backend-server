@@ -133,17 +133,6 @@ function isPlaylistResponse(targetUrl, contentType = '') {
   return /mpegurl|application\/vnd\.apple\.mpegurl|audio\/mpegurl/i.test(contentType) || /\.m3u8(\?|$)/i.test(String(targetUrl || ''));
 }
 
-function summarizeUrl(targetUrl = '') {
-  try {
-    const parsed = new URL(String(targetUrl || ''));
-    const segments = parsed.pathname.split('/').filter(Boolean);
-    const tail = segments.slice(-2).join('/');
-    return `${parsed.host}/${tail || ''}`.replace(/\/$/, '');
-  } catch {
-    return String(targetUrl || '');
-  }
-}
-
 function rewritePlaylistBody(body, playlistUrl, proxyBaseUrl, forwardedHeaders = {}) {
   return String(body || '')
     .split(/\r?\n/)
@@ -211,24 +200,13 @@ router.get('/', async (req, res) => {
       dispatcher: playbackProxyAgent || undefined,
     });
 
-    const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
-    const playlistRequest = isPlaylistResponse(targetUrl, contentType);
-
-    if (playlistRequest || !upstream.ok) {
-      console.log(
-        new Date().toISOString(),
-        '[proxy]',
-        playlistRequest && upstream.ok ? 'playlist' : 'upstream',
-        upstream.status,
-        summarizeUrl(upstreamUrl),
-        embeddedHost ? `target-host=${embeddedHost}` : ''
-      );
-    }
+    console.log(new Date().toISOString(), '[proxy] upstream', upstream.status, upstreamUrl, embeddedHost ? `target-host=${embeddedHost}` : '');
 
     if (!upstream.ok) {
       return res.status(upstream.status).send(await upstream.text());
     }
 
+    const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'public, max-age=60');
@@ -247,7 +225,6 @@ router.get('/', async (req, res) => {
     const buffer = Buffer.from(await upstream.arrayBuffer());
     return res.send(buffer);
   } catch (error) {
-    console.log(new Date().toISOString(), '[proxy] failed', summarizeUrl(upstreamUrl), error?.message || String(error));
     return res.status(502).json({ error: error?.message || 'proxy failed' });
   }
 });

@@ -14,59 +14,12 @@ import videasyRoute from '../server/server.js';
 const app = express();
 const rootDir = dirname(fileURLToPath(import.meta.url));
 
-function isPlaylistUrl(targetUrl = '') {
-  return /\.m3u8(\?|$)/i.test(String(targetUrl || ''));
-}
-
-function summarizeUrl(targetUrl = '') {
-  try {
-    const parsed = new URL(String(targetUrl || ''));
-    const segments = parsed.pathname.split('/').filter(Boolean);
-    const tail = segments.slice(-2).join('/');
-    return `${parsed.host}/${tail || ''}`.replace(/\/$/, '');
-  } catch {
-    return String(targetUrl || '');
-  }
-}
-
-function formatHttpLog(req, res, durationMs) {
-  const status = res.statusCode;
-
-  if (req.path === '/resolve') {
-    return ['[http]', req.method, req.path, status, `${durationMs}ms`];
-  }
-
-  if (req.path === '/' && status < 400) {
-    return null;
-  }
-
-  if (req.path === '/proxy') {
-    const targetUrl = String(req.query.url || '');
-    const playlist = isPlaylistUrl(targetUrl);
-
-    if (!playlist && status < 400) {
-      return null;
-    }
-
-    return ['[http]', req.method, req.path, summarizeUrl(targetUrl), status, `${durationMs}ms`];
-  }
-
-  if (status < 400) {
-    return null;
-  }
-
-  return ['[http]', req.method, req.path, status, `${durationMs}ms`];
-}
-
 app.use(cors());
 app.use(express.json());
 app.use((req, res, next) => {
   const startedAt = Date.now();
   res.on('finish', () => {
-    const logParts = formatHttpLog(req, res, Date.now() - startedAt);
-    if (logParts) {
-      console.log(new Date().toISOString(), ...logParts);
-    }
+    console.log(new Date().toISOString(), '[http]', req.method, req.originalUrl, res.statusCode, `${Date.now() - startedAt}ms`);
   });
   next();
 });
