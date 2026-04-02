@@ -457,6 +457,10 @@ function isVidrockUrl(url) {
   return /vidrock\.net\/(?:embed\/)?(?:movie|tv)\//i.test(String(url || ''));
 }
 
+function isVidrockDemoUrl(url) {
+  return /vidrock\.net\/demo-video\.mp4(?:\?|$)/i.test(String(url || ''));
+}
+
 function isVidkingUrl(url) {
   return /www\.vidking\.net\/embed\//i.test(String(url || ''));
 }
@@ -1534,6 +1538,11 @@ export async function resolveStream(url) {
       url,
       (found) => {
         if (settled || !found?.url) {
+          return;
+        }
+
+        if (isVidrockUrl(url) && isVidrockDemoUrl(found.url)) {
+          console.log(new Date().toISOString(), '[resolve] ignore vidrock demo stream', found.url);
           return;
         }
 
