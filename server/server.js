@@ -80,7 +80,10 @@ router.get('/', async (req, res) => {
     return res.json(proxiedResult);
   } catch (error) {
     const message = error?.message || 'Videasy resolve failed';
-    const status = /required|must be/i.test(message) ? 400 : 404;
+    const statusCode = Number(error?.statusCode);
+    const status = Number.isInteger(statusCode) && statusCode >= 400
+      ? statusCode
+      : (/required|must be/i.test(message) ? 400 : 404);
     return res.status(status).json({ error: message });
   }
 });

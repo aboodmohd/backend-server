@@ -22,6 +22,7 @@ const VIDZEE_KEY_SECRET = '7c9e2b4a1f6d8a3e5';
 const VIDZEE_SERVER_IDS = ['0', '1', '2', '3', '7', '6', '8', '9', '10', '11', '12'];
 const EMBEDDED_HEADERS_PARAM = '__proxy_headers';
 const EMBEDDED_HOST_PARAM = '__proxy_host';
+const VIDEASY_UPSTREAM_BLOCKED = 'VIDEASY_UPSTREAM_BLOCKED';
 const videasyProxyUrl = process.env.VIDEASY_PROXY_URL || process.env.RESIDENTIAL_PROXY_URL || '';
 const videasyProxyAgent = videasyProxyUrl ? new ProxyAgent(videasyProxyUrl) : null;
 const playbackProxyUrl = process.env.PLAYBACK_PROXY_URL || process.env.RESIDENTIAL_PROXY_URL || '';
@@ -39,6 +40,17 @@ function normalizeHeaders(headers = {}) {
 function isCloudflareBlockPage(body = '') {
   const snippet = String(body || '').slice(0, 4000);
   return /attention required! \| cloudflare/i.test(snippet) || /just a moment/i.test(snippet) || /challenge-platform/i.test(snippet);
+}
+
+function createStatusError(message, statusCode, code = message) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.code = code;
+  return error;
+}
+
+function hasErrorCode(error, code) {
+  return error?.code === code || error?.message === code;
 }
 
 function sanitizePlaybackHeaders(headers = {}) {
@@ -798,6 +810,9 @@ async function tryResolveVideasyDirect(sourceUrl) {
     return null;
   }
 
+  let attemptedApiCount = 0;
+  let blockedApiCount = 0;
+
   try {
     const videasySession = await getVideasySession(sourceUrl).catch(() => null);
 
@@ -845,12 +860,19 @@ async function tryResolveVideasyDirect(sourceUrl) {
         }, videasySession);
 
         const encryptedBody = await upstream.text();
+        const blockedByCloudflare = upstream.status === 403 || isCloudflareBlockPage(encryptedBody);
+
+        attemptedApiCount += 1;
+        if (blockedByCloudflare) {
+          blockedApiCount += 1;
+        }
+
         console.log(new Date().toISOString(), '[videasy] direct api', upstream.status, apiUrl, isCloudflareBlockPage(encryptedBody) ? 'cloudflare-block' : '');
 
         let stageOne = '';
         if (upstream.ok && encryptedBody && !isCloudflareBlockPage(encryptedBody)) {
           stageOne = await decryptVideasyPayload(encryptedBody, details.tmdbId, sourceUrl);
-        } else if (upstream.status === 403 || isCloudflareBlockPage(encryptedBody)) {
+        } else if (blockedByCloudflare) {
           stageOne = await resolveVideasyPayloadInBrowser(apiUrl, details.tmdbId, sourceUrl);
         } else {
           continue;
@@ -893,7 +915,15 @@ async function tryResolveVideasyDirect(sourceUrl) {
       }
     }
   } catch (error) {
+    if (hasErrorCode(error, VIDEASY_UPSTREAM_BLOCKED)) {
+      throw error;
+    }
+
     console.log(new Date().toISOString(), '[videasy] direct resolve failed', sourceUrl, error?.message || String(error));
+  }
+
+  if (attemptedApiCount > 0 && blockedApiCount === attemptedApiCount) {
+    throw createStatusError('Videasy upstream blocked by Cloudflare', 502, VIDEASY_UPSTREAM_BLOCKED);
   }
 
   return null;
@@ -1373,7 +1403,8 @@ router.post('/', async (req, res) => {
     return res.json(withProxiedPlaybackUrls(result, req));
   } catch (error) {
     console.log(new Date().toISOString(), '[resolve] failed', error?.message || 'STREAM_NOT_FOUND');
-    return res.status(404).json({
+    const statusCode = Number(error?.statusCode);
+    return res.status(Number.isInteger(statusCode) && statusCode >= 400 ? statusCode : 404).json({
       success: false,
       error: error?.message || 'STREAM_NOT_FOUND'
     });
