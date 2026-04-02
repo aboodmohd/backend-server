@@ -6,6 +6,16 @@ const playbackProxyUrl = process.env.PLAYBACK_PROXY_URL || process.env.RESIDENTI
 const playbackProxyAgent = playbackProxyUrl ? new ProxyAgent(playbackProxyUrl) : null;
 const EMBEDDED_HEADERS_PARAM = '__proxy_headers';
 const EMBEDDED_HOST_PARAM = '__proxy_host';
+const PROXY_RETRY_ATTEMPTS = 3;
+const PROXY_RETRY_DELAY_MS = 250;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableStatus(statusCode) {
+  return Number(statusCode) >= 500;
+}
 
 function normalizeHeaders(headers = {}) {
   return Object.entries(headers).reduce((acc, [key, value]) => {
@@ -194,11 +204,31 @@ router.get('/', async (req, res) => {
   }
 
   try {
-    const upstream = await fetch(upstreamUrl, {
-      redirect: 'follow',
-      headers: upstreamHeaders,
-      dispatcher: playbackProxyAgent || undefined,
-    });
+    let upstream = null;
+
+    for (let attempt = 1; attempt <= PROXY_RETRY_ATTEMPTS; attempt += 1) {
+      try {
+        upstream = await fetch(upstreamUrl, {
+          redirect: 'follow',
+          headers: upstreamHeaders,
+          dispatcher: playbackProxyAgent || undefined,
+        });
+
+        if (!isRetryableStatus(upstream.status) || attempt === PROXY_RETRY_ATTEMPTS) {
+          break;
+        }
+
+        console.log(new Date().toISOString(), '[proxy] retry', upstream.status, upstreamUrl, `attempt=${attempt + 1}/${PROXY_RETRY_ATTEMPTS}`);
+      } catch (error) {
+        if (attempt === PROXY_RETRY_ATTEMPTS) {
+          throw error;
+        }
+
+        console.log(new Date().toISOString(), '[proxy] retry', upstreamUrl, error?.message || String(error), `attempt=${attempt + 1}/${PROXY_RETRY_ATTEMPTS}`);
+      }
+
+      await sleep(PROXY_RETRY_DELAY_MS * attempt);
+    }
 
     console.log(new Date().toISOString(), '[proxy] upstream', upstream.status, upstreamUrl, embeddedHost ? `target-host=${embeddedHost}` : '');
 
