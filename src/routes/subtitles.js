@@ -5,6 +5,11 @@ const WYZIE_SEARCH_URL = 'https://sub.wyzie.io/search';
 const REQUEST_TIMEOUT_MS = 15000;
 const DEFAULT_LANGUAGES = ['en', 'ar'];
 
+function getBaseUrl(req) {
+  const protocol = req.get('x-forwarded-proto') || req.protocol || 'https';
+  return `${protocol}://${req.get('host')}`;
+}
+
 function withTimeout(ms = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
@@ -94,6 +99,38 @@ function dedupeSubtitles(subtitles = []) {
   });
 }
 
+router.get('/file', async (req, res) => {
+  const targetUrl = String(req.query.url || '').trim();
+  if (!targetUrl) {
+    return res.status(400).json({ success: false, error: 'url required' });
+  }
+
+  const { signal, done } = withTimeout();
+
+  try {
+    const response = await fetch(targetUrl, {
+      signal,
+      headers: {
+        'user-agent': 'Mozilla/5.0',
+        accept: 'text/plain, text/vtt, application/x-subrip, */*'
+      }
+    });
+
+    if (!response.ok) {
+      return res.status(response.status).send(await response.text());
+    }
+
+    const contentType = response.headers.get('content-type') || 'text/plain; charset=utf-8';
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', contentType);
+    return res.send(await response.text());
+  } catch (error) {
+    return res.status(502).json({ success: false, error: error?.message || 'subtitle proxy failed' });
+  } finally {
+    done();
+  }
+});
+
 router.get('/', async (req, res) => {
   const apiKey = String(process.env.WYZIE_API_KEY || '').trim();
   if (!apiKey) {
@@ -149,9 +186,20 @@ router.get('/', async (req, res) => {
     results.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
   );
 
+  const subtitleProxyBaseUrl = new URL('/api/subtitles/file', getBaseUrl(req));
+  const proxiedSubtitles = subtitles.map((entry) => {
+    const nextUrl = new URL(subtitleProxyBaseUrl);
+    nextUrl.searchParams.set('url', entry.url);
+
+    return {
+      ...entry,
+      url: nextUrl.toString()
+    };
+  });
+
   return res.json({
     success: true,
-    subtitles,
+    subtitles: proxiedSubtitles,
     languages
   });
 });
