@@ -163,18 +163,12 @@ function buildAbsolutePlaylistUrl(playlistUrl, candidatePath) {
 
 function shouldProxyPlaybackUrl(targetUrl, headers = {}, type = '') {
   const normalizedType = String(type || '').toUpperCase();
-  const normalizedHeaders = normalizeHeaders(headers);
 
   if (normalizedType !== 'HLS' && !/\.m3u8(\?|$)/i.test(String(targetUrl || ''))) {
     return false;
   }
 
-  try {
-    const parsed = new URL(String(targetUrl || ''));
-    return Boolean(Object.keys(normalizedHeaders).length || parsed.searchParams.has(EMBEDDED_HEADERS_PARAM) || parsed.searchParams.has(EMBEDDED_HOST_PARAM));
-  } catch {
-    return Boolean(Object.keys(normalizedHeaders).length);
-  }
+  return true;
 }
 
 function getProxyBaseUrl(req) {
