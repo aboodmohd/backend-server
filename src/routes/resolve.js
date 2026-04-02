@@ -386,9 +386,10 @@ async function attachQualities(result, sourceCandidates = []) {
   }
 
   const sourceQualities = buildQualityEntriesFromSources(sourceCandidates);
-  const playlistQualities = sourceQualities.length
-    ? []
-    : await fetchPlaylistQualities(result.url, result.headers || {});
+  const playlistQualities = (await fetchPlaylistQualities(result.url, result.headers || {})).filter((entry) => {
+    const label = String(entry?.label || entry?.quality || '').trim().toLowerCase();
+    return label !== 'auto';
+  });
 
   const qualities = dedupeQualities([
     ...playlistQualities,
