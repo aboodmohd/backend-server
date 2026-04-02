@@ -7,6 +7,7 @@ import streamRoute from './routes/stream.js';
 import downloadRoute from './routes/download.js';
 import resolveRoute from './routes/resolve.js';
 import proxyRoute from './routes/proxy.js';
+import subtitlesRoute from './routes/subtitles.js';
 import { warmBrowser } from './workers/playwright.js';
 import videasyRoute from '../server/server.js';
 
@@ -32,6 +33,7 @@ app.use('/api/extract', extractRoute);
 app.use('/api/videasy', videasyRoute);
 app.use('/api/stream', streamRoute);
 app.use('/api/download', downloadRoute);
+app.use('/api/subtitles', subtitlesRoute);
 app.use('/resolve', resolveRoute);
 app.use('/proxy', proxyRoute);
 
