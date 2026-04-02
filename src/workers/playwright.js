@@ -9,6 +9,7 @@ chromium.use(StealthPlugin());
 let browserPromise;
 let videasySessionCache = null;
 let vidkingSessionCache = null;
+const VIDEASY_UPSTREAM_BLOCKED = 'VIDEASY_UPSTREAM_BLOCKED';
 
 const STREAM_URL_PATTERNS = [
   /\.m3u8(\?|$)/i,
@@ -114,6 +115,13 @@ function getDefaultUserAgent() {
     'AppleWebKit/537.36 (KHTML, like Gecko) ' +
     'Chrome/120.0.0.0 Safari/537.36'
   );
+}
+
+function createStatusError(message, statusCode, code = message) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.code = code;
+  return error;
 }
 
 function isCloudflareBlockPage(body = '') {
@@ -879,6 +887,18 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   const vidfastResolverHints = [];
   let vidfastRuntimeReadyPromise = null;
   const videasyApiStatuses = [];
+  const getVideasyUpstreamBlockError = () => {
+    if (!isVideasyUrl(targetUrl) || firstResultResolved) {
+      return null;
+    }
+
+    const videasyForbiddenCount = videasyApiStatuses.filter((entry) => entry.status === 403).length;
+    if (videasyForbiddenCount < 3) {
+      return null;
+    }
+
+    return createStatusError('Videasy upstream blocked by Cloudflare', 502, VIDEASY_UPSTREAM_BLOCKED);
+  };
 
   const stopIfResolved = () => firstResultResolved || page.isClosed();
 
@@ -1208,8 +1228,7 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       await primeVideasyPlayer(page, targetUrl);
       await waitForNetworkSettle(2000, 12000, 2000);
 
-      const videasyForbiddenCount = videasyApiStatuses.filter((entry) => entry.status === 403).length;
-      if (videasyForbiddenCount >= 3) {
+      if (getVideasyUpstreamBlockError()) {
         console.log(new Date().toISOString(), '[videasy] upstream api blocked, continuing browser media capture');
       }
     }
@@ -1244,6 +1263,11 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       );
     }
 
+    const videasyUpstreamBlockError = getVideasyUpstreamBlockError();
+    if (videasyUpstreamBlockError) {
+      throw videasyUpstreamBlockError;
+    }
+
     if (!stopIfResolved() && isVidfastUrl(targetUrl)) {
       await triggerVidfastBootstrap(page, targetUrl);
       await safeWait(1500);
@@ -1269,6 +1293,10 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   } catch (error) {
     if (isExpectedCloseError(error)) {
       return;
+    }
+
+    if (error?.code === VIDEASY_UPSTREAM_BLOCKED) {
+      throw error;
     }
 
     console.log(new Date().toISOString(), '[extractor] navigation error', error?.message || String(error));
