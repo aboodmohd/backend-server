@@ -1,10 +1,16 @@
 import { Router } from 'express';
+import { dirname, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createMemoryCache } from './cache.js';
 import { getVideasyCacheKey } from './providers.js';
 import { buildVideasyPlaybackUrl, resolveStream } from '../src/routes/resolve.js';
 
 const router = Router();
-const cache = createMemoryCache();
+const currentDir = dirname(fileURLToPath(import.meta.url));
+const VIDEASY_CACHE_TTL_MS = Math.max(1, Number(process.env.RESOLVE_CACHE_TTL_MS || 6 * 60 * 60 * 1000) || 6 * 60 * 60 * 1000);
+const cache = createMemoryCache(VIDEASY_CACHE_TTL_MS, {
+  persistPath: process.env.VIDEASY_CACHE_PATH || resolvePath(currentDir, '../.cache/videasy-cache.json')
+});
 
 function getProxyBaseUrl(req) {
   const protocol = req.get('x-forwarded-proto') || req.protocol || 'https';
@@ -51,6 +57,7 @@ function proxyVideasyResult(req, result) {
 
 router.get('/', async (req, res) => {
   try {
+    const shouldRefresh = String(req.query.refresh || '').trim() === '1';
     const query = {
       title: req.query.title,
       year: req.query.year,
@@ -68,16 +75,15 @@ router.get('/', async (req, res) => {
       episode: query.episode ? Number(query.episode) : null,
     });
 
-    const cached = cache.get(cacheKey);
+    const cached = shouldRefresh ? null : cache.get(cacheKey);
     if (cached) {
-      return res.json(cached);
+      return res.json({ ...proxyVideasyResult(req, cached), cached: true });
     }
 
     const playbackUrl = buildVideasyPlaybackUrl(query);
     const result = await resolveStream(playbackUrl);
-    const proxiedResult = proxyVideasyResult(req, result);
-    cache.set(cacheKey, proxiedResult);
-    return res.json(proxiedResult);
+    cache.set(cacheKey, result, VIDEASY_CACHE_TTL_MS);
+    return res.json(proxyVideasyResult(req, result));
   } catch (error) {
     const message = error?.message || 'Videasy resolve failed';
     const statusCode = Number(error?.statusCode);

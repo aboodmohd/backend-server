@@ -2,7 +2,10 @@ const VIDEO_PATTERNS = [
   /\.m3u8(\?|$)/i,
   /\.mpd(\?|$)/i,
   /\.mp4(\?|$)/i,
+  /\.m4v(\?|$)/i,
   /\.webm(\?|$)/i,
+  /\.ogv(\?|$)/i,
+  /\.flv(\?|$)/i,
   /\.mkv(\?|$)/i,
   /\.mov(\?|$)/i,
   /\/hls\//i,
@@ -19,6 +22,13 @@ const VIDEO_CONTENT_TYPES = [
   'application/vnd.apple.mpegurl',
   'application/x-mpegurl',
   'application/dash+xml',
+  'video/mp4',
+  'video/webm',
+  'video/ogg',
+  'application/ogg',
+  'video/quicktime',
+  'video/x-flv',
+  'video/x-matroska',
   'video/'
 ];
 
@@ -64,13 +74,19 @@ export function isVideoContentType(contentType = '') {
 }
 
 export function detectType(url, contentType = '') {
+  const normalizedUrl = String(url || '').toLowerCase();
   const normalizedType = contentType.toLowerCase();
-  if (/\.m3u8/i.test(url) || normalizedType.includes('mpegurl')) return 'HLS';
-  if (/\.mpd/i.test(url) || normalizedType.includes('dash+xml')) return 'DASH';
-  if (/\.mp4/i.test(url)) return 'MP4';
-  if (/\.webm/i.test(url)) return 'WEBM';
-  if (/\.mkv/i.test(url)) return 'MKV';
-  if (/\.mov/i.test(url)) return 'MOV';
+
+  if (/\.m3u8($|[?#])/i.test(normalizedUrl) || normalizedType.includes('mpegurl')) return 'HLS';
+  if (/\.mpd($|[?#])/i.test(normalizedUrl) || normalizedType.includes('dash+xml')) return 'DASH';
+  if (/\.flv($|[?#])/i.test(normalizedUrl) || normalizedType.includes('x-flv')) return 'FLV';
+  if (/\.(mp4|m4v)($|[?#])/i.test(normalizedUrl) || normalizedType.includes('video/mp4')) return 'MP4';
+  if (/\.webm($|[?#])/i.test(normalizedUrl) || normalizedType.includes('video/webm')) return 'WEBM';
+  if (/\.(ogv|ogg)($|[?#])/i.test(normalizedUrl) || normalizedType.includes('video/ogg') || normalizedType.includes('application/ogg')) return 'OGG';
+  if (/\.mkv($|[?#])/i.test(normalizedUrl) || normalizedType.includes('matroska')) return 'MKV';
+  if (/\.mov($|[?#])/i.test(normalizedUrl) || normalizedType.includes('quicktime')) return 'MOV';
+  if (/\.(m4a|m4b|mp3|wav|weba|aac|oga|flac)($|[?#])/i.test(normalizedUrl) || normalizedType.startsWith('audio/')) return 'AUDIO';
+
   return 'STREAM';
 }
 

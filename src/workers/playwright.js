@@ -1,6 +1,7 @@
 import { chromium } from 'playwright-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import CryptoJS from 'crypto-js';
+import { existsSync } from 'node:fs';
 import { setupInterceptors } from '../interceptors/interceptSetup.js';
 import { detectType, extractStreamFromPayload } from '../interceptors/index.js';
 
@@ -9,6 +10,7 @@ chromium.use(StealthPlugin());
 let browserPromise;
 let videasySessionCache = null;
 let vidkingSessionCache = null;
+let vidfastSessionCache = null;
 const VIDEASY_UPSTREAM_BLOCKED = 'VIDEASY_UPSTREAM_BLOCKED';
 
 const STREAM_URL_PATTERNS = [
@@ -34,24 +36,207 @@ const NON_STREAM_ASSET_PATTERNS = [
   /\/favicon\.ico(?:\?|$)/i
 ];
 
-function getBrowser(options = {}) {
-  if (!browserPromise) {
-    browserPromise = chromium.launch({
-      channel: 'chromium',
-      headless: options.headless ?? true,
-      args: [
-        '--disable-web-security',
-        '--disable-site-isolation-trials',
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-dev-shm-usage',
-        '--disable-gpu'
-      ]
+function clearBrowserState(reason = '') {
+  if (reason) {
+    console.log(new Date().toISOString(), '[browser] reset', reason);
+  }
+
+  browserPromise = null;
+}
+
+async function closeCachedBrowser(reason = '') {
+  const activeBrowserPromise = browserPromise;
+  clearBrowserState(reason);
+
+  if (!activeBrowserPromise) {
+    return;
+  }
+
+  try {
+    const activeBrowser = await activeBrowserPromise;
+    if (activeBrowser?.isConnected?.()) {
+      await activeBrowser.close().catch(() => undefined);
+    }
+  } catch {
+    // Ignore launch/close failures while resetting the cached browser.
+  }
+}
+
+function getLaunchOptions(options = {}) {
+  const args = ['--disable-dev-shm-usage'];
+
+  if (process.platform === 'linux') {
+    args.push('--no-sandbox', '--disable-setuid-sandbox');
+  }
+
+  return {
+    headless: options.headless ?? true,
+    args
+  };
+}
+
+function getInstalledBrowserExecutableCandidates() {
+  const envCandidates = [
+    process.env.NOVA_BROWSER_EXECUTABLE,
+    process.env.PLAYWRIGHT_EXECUTABLE_PATH,
+    process.env.CHROME_EXECUTABLE_PATH,
+    process.env.BRAVE_EXECUTABLE_PATH
+  ].filter(Boolean);
+
+  if (process.platform === 'darwin') {
+    return [
+      ...envCandidates,
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+      '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium'
+    ].filter((candidate, index, entries) => entries.indexOf(candidate) === index && existsSync(candidate));
+  }
+
+  if (process.platform === 'win32') {
+    return [
+      ...envCandidates,
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
+      'C:\\Program Files (x86)\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
+      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
+    ].filter((candidate, index, entries) => entries.indexOf(candidate) === index && existsSync(candidate));
+  }
+
+  return [
+    ...envCandidates,
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
+    '/usr/bin/brave-browser',
+    '/snap/bin/chromium'
+  ].filter((candidate, index, entries) => entries.indexOf(candidate) === index && existsSync(candidate));
+}
+
+function getLaunchCandidates(options = {}) {
+  const baseOptions = getLaunchOptions(options);
+  const candidates = [];
+  const installedExecutables = getInstalledBrowserExecutableCandidates();
+
+  for (const executablePath of installedExecutables) {
+    candidates.push({
+      label: `system:${executablePath.split(/[\\/]/).pop() || 'browser'}`,
+      options: {
+        ...baseOptions,
+        executablePath
+      }
     });
   }
 
+  if (process.platform === 'darwin' || process.platform === 'win32') {
+    candidates.push({
+      label: 'channel:chrome',
+      options: {
+        ...baseOptions,
+        channel: 'chrome'
+      }
+    });
+  }
+
+  const explicitExecutablePath = typeof chromium.executablePath === 'function' ? chromium.executablePath() : '';
+
+  if (explicitExecutablePath) {
+    candidates.push({
+      label: 'explicit-executable',
+      options: {
+        ...baseOptions,
+        executablePath: explicitExecutablePath
+      }
+    });
+  } else {
+    candidates.push({
+      label: 'channel-chromium',
+      options: {
+        ...baseOptions,
+        channel: 'chromium'
+      }
+    });
+  }
+
+  candidates.push({
+    label: 'default',
+    options: baseOptions
+  });
+
+  return candidates;
+}
+
+async function launchBrowser(options = {}) {
+  let lastError = null;
+
+  for (const candidate of getLaunchCandidates(options)) {
+    try {
+      const browser = await chromium.launch(candidate.options);
+      console.log(
+        new Date().toISOString(),
+        '[browser] launched',
+        candidate.label,
+        candidate.options.executablePath || candidate.options.channel || 'managed'
+      );
+      browser.on('disconnected', () => {
+        clearBrowserState('disconnected');
+      });
+      return browser;
+    } catch (error) {
+      lastError = error;
+      console.log(new Date().toISOString(), '[browser] launch failed', candidate.label, error?.message || String(error));
+    }
+  }
+
+  throw lastError;
+}
+
+async function getBrowser(options = {}) {
+  if (browserPromise) {
+    try {
+      const browser = await browserPromise;
+      if (browser?.isConnected?.()) {
+        return browser;
+      }
+    } catch (error) {
+      console.log(new Date().toISOString(), '[browser] cached launch failed', error?.message || String(error));
+    }
+
+    clearBrowserState('stale');
+  }
+
+  browserPromise = launchBrowser(options).catch((error) => {
+    clearBrowserState('launch-error');
+    throw error;
+  });
+
   return browserPromise;
+}
+
+async function createBrowserContext(contextOptions = {}, launchOptions = {}) {
+  let lastError = null;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const browser = await getBrowser(launchOptions);
+      return await browser.newContext(contextOptions);
+    } catch (error) {
+      lastError = error;
+
+      if (!isExpectedCloseError(error)) {
+        throw error;
+      }
+
+      console.log(new Date().toISOString(), '[browser] newContext retry', attempt + 1, error?.message || String(error));
+      await closeCachedBrowser('new-context-failed');
+    }
+  }
+
+  throw lastError;
 }
 
 function isExpectedCloseError(error) {
@@ -81,6 +266,34 @@ function isVidfastUrl(url) {
   } catch {
     return false;
   }
+}
+
+function isVidcoreUrl(url) {
+  try {
+    return /(^|\.)vidcore\.net$/i.test(new URL(String(url || '')).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function getBootstrapRuntimeTarget(url) {
+  if (isVidfastUrl(url)) {
+    return {
+      label: 'vidfast',
+      runtimeKey: '__VIDFAST_RUNTIME__',
+      apKey: '__VIDFAST_AP__'
+    };
+  }
+
+  if (isVidcoreUrl(url)) {
+    return {
+      label: 'vidcore',
+      runtimeKey: '__VIDCORE_RUNTIME__',
+      apKey: '__VIDCORE_AP__'
+    };
+  }
+
+  return null;
 }
 
 function isVideasyUrl(url) {
@@ -216,9 +429,21 @@ async function decryptVideasyPayloadInPage(page, encryptedPayload, mediaId) {
 }
 
 async function closeUnexpectedPage(newPage, reason) {
-  console.log(new Date().toISOString(), reason, newPage.url() || 'about:blank');
-  await newPage.waitForTimeout(250).catch(() => undefined);
-  await newPage.close().catch(() => undefined);
+  const pageUrl = newPage.isClosed() ? 'about:blank' : newPage.url() || 'about:blank';
+  console.log(new Date().toISOString(), reason, pageUrl);
+
+  if (newPage.isClosed()) {
+    return;
+  }
+
+  await Promise.race([
+    newPage.waitForLoadState('domcontentloaded', { timeout: 1000 }).catch(() => undefined),
+    newPage.waitForTimeout(1200).catch(() => undefined)
+  ]).catch(() => undefined);
+
+  if (!newPage.isClosed()) {
+    await newPage.close().catch(() => undefined);
+  }
 }
 
 async function primeVideasyPlayer(page, targetUrl) {
@@ -252,6 +477,23 @@ async function primeVidzeePlayer(page, targetUrl) {
     await page.mouse.click(640, 360).catch(() => undefined);
     await page.keyboard.press('Space').catch(() => undefined);
     await page.waitForTimeout(1000).catch(() => undefined);
+  }
+}
+
+async function primeVidcorePlayer(page, targetUrl) {
+  if (!isVidcoreUrl(targetUrl)) {
+    return;
+  }
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    if (page.isClosed()) {
+      return;
+    }
+
+    await page.locator('button').first().click({ force: true, timeout: 1000 }).catch(() => undefined);
+    await page.mouse.click(640, 360).catch(() => undefined);
+    await page.keyboard.press('Space').catch(() => undefined);
+    await page.waitForTimeout(900).catch(() => undefined);
   }
 }
 
@@ -324,18 +566,43 @@ async function warmVidfastSession(page, targetUrl) {
     return;
   }
 
+  const now = Date.now();
+  if (vidfastSessionCache && vidfastSessionCache.expiresAt > now) {
+    console.log(new Date().toISOString(), '[vidfast] warmup cache hit');
+    return;
+  }
+
+  let warmupContext = null;
+
   try {
-    const warmupPage = await page.context().newPage();
+    const browser = page.context().browser();
+    if (!browser) {
+      return;
+    }
+
+    warmupContext = await browser.newContext({
+      bypassCSP: true,
+      viewport: { width: 1280, height: 720 },
+      userAgent: getDefaultUserAgent()
+    });
+    const warmupPage = await warmupContext.newPage();
 
     await warmupPage.goto('https://vidfast.pro', {
       waitUntil: 'domcontentloaded',
       timeout: 20000
     });
     console.log(new Date().toISOString(), '[vidfast] warmup visited homepage');
-    await warmupPage.waitForTimeout(2000);
-    await warmupPage.close().catch(() => undefined);
+    await warmupPage.waitForTimeout(1000).catch(() => undefined);
+    const storageState = await warmupContext.storageState().catch(() => undefined);
+
+    vidfastSessionCache = {
+      expiresAt: now + 10 * 60 * 1000,
+      storageState
+    };
   } catch (error) {
     console.log(new Date().toISOString(), '[vidfast] warmup failed', error?.message || String(error));
+  } finally {
+    await warmupContext?.close().catch(() => undefined);
   }
 }
 
@@ -731,14 +998,16 @@ async function inspectVidfastRuntime(page) {
   return null;
 }
 
-async function triggerVidfastBootstrap(page, targetUrl) {
-  if (!isVidfastUrl(targetUrl)) {
+async function triggerProtectedBootstrap(page, targetUrl) {
+  const runtimeTarget = getBootstrapRuntimeTarget(targetUrl);
+
+  if (!runtimeTarget) {
     return;
   }
 
-  const result = await page.evaluate(async () => {
-    const runtime = window.__VIDFAST_RUNTIME__ || {};
-    const runtimeAp = runtime.ap || window.__VIDFAST_AP__;
+  const result = await page.evaluate(async ({ runtimeKey, apKey }) => {
+    const runtime = window[runtimeKey] || {};
+    const runtimeAp = runtime.ap || window[apKey];
 
     const html = document.documentElement?.innerHTML || '';
     const tokenMatch = html.match(/en:\"([^\"]+)\"/) || html.match(/en:"([^"]+)"/);
@@ -839,19 +1108,25 @@ async function triggerVidfastBootstrap(page, targetUrl) {
     } catch (error) {
       return { ok: false, reason: error?.stack || error?.message || String(error) };
     }
-  }).catch((error) => ({ ok: false, reason: error?.message || String(error) }));
+  }, runtimeTarget).catch((error) => ({ ok: false, reason: error?.message || String(error) }));
 
-  console.log(new Date().toISOString(), '[vidfast] manual bootstrap', JSON.stringify(result));
+  console.log(new Date().toISOString(), `[${runtimeTarget.label}] manual bootstrap`, JSON.stringify(result));
 
   return result;
 }
 
-async function waitForVidfastRuntime(page, timeoutMs = 12000) {
+async function waitForProtectedRuntime(page, targetUrl, timeoutMs = 12000) {
+  const runtimeTarget = getBootstrapRuntimeTarget(targetUrl);
+
+  if (!runtimeTarget) {
+    return false;
+  }
+
   const startedAt = Date.now();
 
   while (!page.isClosed() && Date.now() - startedAt < timeoutMs) {
     const runtimeReady = await page
-      .evaluate(() => Boolean(window.__VIDFAST_RUNTIME__?.ap || window.__VIDFAST_AP__))
+      .evaluate(({ runtimeKey, apKey }) => Boolean(window[runtimeKey]?.ap || window[apKey]), runtimeTarget)
       .catch(() => false);
 
     if (runtimeReady) {
@@ -866,26 +1141,36 @@ async function waitForVidfastRuntime(page, timeoutMs = 12000) {
 
 export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   console.log(new Date().toISOString(), '[extractor] starting', targetUrl);
-  const browser = await getBrowser(options);
   const expectedVidfastPath = getExpectedVidfastPath(targetUrl);
+  const now = Date.now();
+  const vidfastStorageState =
+    isVidfastUrl(targetUrl) && vidfastSessionCache?.expiresAt > now ? vidfastSessionCache.storageState : undefined;
 
-  const context = await browser.newContext({
+  const context = await createBrowserContext({
     bypassCSP: true,
     userAgent:
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
       'AppleWebKit/537.36 (KHTML, like Gecko) ' +
       'Chrome/120.0.0.0 Safari/537.36',
-    viewport: { width: 1280, height: 720 }
-  });
+    viewport: { width: 1280, height: 720 },
+    storageState: vidfastStorageState
+  }, options);
 
   const page = await context.newPage();
+  const popupCloseTasks = new Set();
   page.on('popup', (popup) => {
-    closeUnexpectedPage(popup, '[popup] closing').catch(() => undefined);
+    const closeTask = closeUnexpectedPage(popup, '[popup] closing')
+      .catch(() => undefined)
+      .finally(() => {
+        popupCloseTasks.delete(closeTask);
+      });
+
+    popupCloseTasks.add(closeTask);
   });
   let firstResultResolved = false;
   let lastRelevantActivityAt = Date.now();
   const vidfastResolverHints = [];
-  let vidfastRuntimeReadyPromise = null;
+  let protectedRuntimeReadyPromise = null;
   const videasyApiStatuses = [];
   const getVideasyUpstreamBlockError = () => {
     if (!isVideasyUrl(targetUrl) || firstResultResolved) {
@@ -1096,7 +1381,8 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       }
     }
 
-    if (!isVidfastUrl(targetUrl)) {
+    const runtimeTarget = getBootstrapRuntimeTarget(targetUrl);
+    if (!runtimeTarget) {
       return;
     }
 
@@ -1107,20 +1393,27 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 
     const url = response.url();
     const status = response.status();
-    console.log(new Date().toISOString(), '[vidfast:xhr]', status, url);
+    console.log(new Date().toISOString(), `[${runtimeTarget.label}:xhr]`, status, url);
 
-    if (!url.includes('/api/') && !url.includes('source') && !url.includes('stream') && !url.includes('vidfast')) {
+    if (
+      !url.includes('/api/') &&
+      !url.includes('/radowi/') &&
+      !url.includes('source') &&
+      !url.includes('stream') &&
+      !url.includes('vidfast') &&
+      !url.includes('vidcore')
+    ) {
       return;
     }
 
     try {
       const body = await response.text();
-      console.log(new Date().toISOString(), '[vidfast:xhr-body]', url, '->', body.slice(0, 500));
+      console.log(new Date().toISOString(), `[${runtimeTarget.label}:xhr-body]`, url, '->', body.slice(0, 500));
     } catch {}
   });
 
   page.on('requestfailed', (request) => {
-    if (!isVidfastUrl(targetUrl)) {
+    if (!getBootstrapRuntimeTarget(targetUrl)) {
       return;
     }
 
@@ -1132,7 +1425,7 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   });
 
   page.on('response', (response) => {
-    if (!isVidfastUrl(targetUrl)) {
+    if (!getBootstrapRuntimeTarget(targetUrl)) {
       return;
     }
 
@@ -1167,7 +1460,9 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   });
 
   try {
-    await warmVidfastSession(page, targetUrl);
+    if (isVidfastUrl(targetUrl) && vidfastStorageState) {
+      console.log(new Date().toISOString(), '[vidfast] reusing cached session state');
+    }
 
     await page.goto(targetUrl, {
       waitUntil: isVidkingUrl(targetUrl) ? 'networkidle' : 'domcontentloaded',
@@ -1194,8 +1489,8 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     await logVidfastPageState(page, targetUrl);
     await patchVidfastVisibility(page, targetUrl);
 
-    if (isVidfastUrl(targetUrl)) {
-      vidfastRuntimeReadyPromise = waitForVidfastRuntime(page, 25000);
+    if (getBootstrapRuntimeTarget(targetUrl)) {
+      protectedRuntimeReadyPromise = waitForProtectedRuntime(page, targetUrl, isVidfastUrl(targetUrl) ? 25000 : 18000);
     }
 
     await safeWait(isVidfastUrl(targetUrl) ? 2000 : 250);
@@ -1239,18 +1534,40 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       await waitForNetworkSettle(2500, 15000, 3000);
     }
 
+    if (!stopIfResolved() && isVidcoreUrl(targetUrl)) {
+      await safeWait(2500);
+      await primeVidcorePlayer(page, targetUrl);
+      await waitForNetworkSettle(2500, 16000, 4000);
+    }
+
+    if (!stopIfResolved() && isVidcoreUrl(targetUrl)) {
+      const runtimeReady = await (protectedRuntimeReadyPromise || waitForProtectedRuntime(page, targetUrl, 12000));
+      console.log(new Date().toISOString(), '[vidcore] runtime ready', runtimeReady);
+      if (runtimeReady) {
+        await triggerProtectedBootstrap(page, targetUrl);
+        await safeWait(1000);
+        await waitForNetworkSettle(2000, 12000, 1500);
+      }
+    }
+
+    if (!stopIfResolved() && isVidcoreUrl(targetUrl)) {
+      await triggerProtectedBootstrap(page, targetUrl);
+      await safeWait(1500);
+      await waitForNetworkSettle(2500, 12000, 2000);
+    }
+
     if (!stopIfResolved() && isVidfastUrl(targetUrl)) {
-      const runtimeReady = await (vidfastRuntimeReadyPromise || waitForVidfastRuntime(page, 12000));
+      const runtimeReady = await (protectedRuntimeReadyPromise || waitForProtectedRuntime(page, targetUrl, 12000));
       console.log(new Date().toISOString(), '[vidfast] runtime ready', runtimeReady);
       if (runtimeReady) {
-        await triggerVidfastBootstrap(page, targetUrl);
+        await triggerProtectedBootstrap(page, targetUrl);
         await safeWait(1000);
         await waitForNetworkSettle(2000, 8000, 1000);
       }
     }
 
     if (!stopIfResolved() && isVidfastUrl(targetUrl)) {
-      await triggerVidfastBootstrap(page, targetUrl);
+      await triggerProtectedBootstrap(page, targetUrl);
       await safeWait(1500);
       await waitForNetworkSettle(2500, 12000, 2000);
     }
@@ -1269,7 +1586,7 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     }
 
     if (!stopIfResolved() && isVidfastUrl(targetUrl)) {
-      await triggerVidfastBootstrap(page, targetUrl);
+      await triggerProtectedBootstrap(page, targetUrl);
       await safeWait(1500);
       await waitForNetworkSettle(2500, 8000, 1500);
     }
@@ -1304,7 +1621,18 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       throw error;
     }
   } finally {
+    if (isVidfastUrl(targetUrl)) {
+      const storageState = await context.storageState().catch(() => undefined);
+      if (storageState) {
+        vidfastSessionCache = {
+          expiresAt: Date.now() + 10 * 60 * 1000,
+          storageState
+        };
+      }
+    }
+
     console.log(new Date().toISOString(), '[extractor] closing', targetUrl);
+    await Promise.allSettled([...popupCloseTasks]);
     await context.close().catch(() => undefined);
   }
 }
@@ -1319,8 +1647,7 @@ export async function getVideasySession(targetUrl = 'https://player.videasy.net/
     return videasySessionCache.value;
   }
 
-  const browser = await getBrowser();
-  const context = await browser.newContext({
+  const context = await createBrowserContext({
     bypassCSP: true,
     viewport: { width: 1280, height: 720 },
     userAgent: getDefaultUserAgent()
@@ -1378,8 +1705,7 @@ export async function getVidkingSession(targetUrl = 'https://www.vidking.net/') 
     return vidkingSessionCache.value;
   }
 
-  const browser = await getBrowser();
-  const context = await browser.newContext({
+  const context = await createBrowserContext({
     bypassCSP: true,
     viewport: { width: 1280, height: 720 },
     userAgent: getDefaultUserAgent()
@@ -1417,8 +1743,7 @@ export async function getVidkingSession(targetUrl = 'https://www.vidking.net/') 
 }
 
 export async function decryptVideasyPayload(encryptedPayload, mediaId, targetUrl = 'https://player.videasy.net/') {
-  const browser = await getBrowser();
-  const context = await browser.newContext({
+  const context = await createBrowserContext({
     bypassCSP: true,
     viewport: { width: 1280, height: 720 },
     userAgent: getDefaultUserAgent()
@@ -1438,8 +1763,7 @@ export async function decryptVideasyPayload(encryptedPayload, mediaId, targetUrl
 }
 
 export async function resolveVideasyPayloadInBrowser(apiUrl, mediaId, targetUrl = 'https://player.videasy.net/') {
-  const browser = await getBrowser();
-  const context = await browser.newContext({
+  const context = await createBrowserContext({
     bypassCSP: true,
     viewport: { width: 1280, height: 720 },
     userAgent: getDefaultUserAgent()
@@ -1447,6 +1771,7 @@ export async function resolveVideasyPayloadInBrowser(apiUrl, mediaId, targetUrl 
   const page = await context.newPage();
   const capturedPayloads = [];
   const seenPayloadKeys = new Set();
+  const popupCloseTasks = new Set();
 
   const rememberPayload = async (url, status, body) => {
     console.log(new Date().toISOString(), '[videasy:browser-api]', status, url, '->', String(body || '').slice(0, 500));
@@ -1465,7 +1790,13 @@ export async function resolveVideasyPayloadInBrowser(apiUrl, mediaId, targetUrl 
   };
 
   page.on('popup', (popup) => {
-    closeUnexpectedPage(popup, '[videasy] closing popup').catch(() => undefined);
+    const closeTask = closeUnexpectedPage(popup, '[videasy] closing popup')
+      .catch(() => undefined)
+      .finally(() => {
+        popupCloseTasks.delete(closeTask);
+      });
+
+    popupCloseTasks.add(closeTask);
   });
 
   page.on('response', (response) => {
@@ -1593,13 +1924,13 @@ export async function resolveVideasyPayloadInBrowser(apiUrl, mediaId, targetUrl 
 
     return '';
   } finally {
+    await Promise.allSettled([...popupCloseTasks]);
     await context.close().catch(() => undefined);
   }
 }
 
 export async function decryptVidkingPayload(encryptedPayload, mediaId, targetUrl = 'https://www.vidking.net/') {
-  const browser = await getBrowser();
-  const context = await browser.newContext({
+  const context = await createBrowserContext({
     bypassCSP: true,
     viewport: { width: 1280, height: 720 },
     userAgent: getDefaultUserAgent()

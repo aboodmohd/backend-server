@@ -1,3 +1,5 @@
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { Router } from 'express';
 import { ProxyAgent } from 'undici';
 
@@ -6,8 +8,18 @@ const playbackProxyUrl = process.env.PLAYBACK_PROXY_URL || process.env.RESIDENTI
 const playbackProxyAgent = playbackProxyUrl ? new ProxyAgent(playbackProxyUrl) : null;
 const EMBEDDED_HEADERS_PARAM = '__proxy_headers';
 const EMBEDDED_HOST_PARAM = '__proxy_host';
+const LEGACY_HEADERS_PARAM = 'headers';
+const LEGACY_HOST_PARAM = 'host';
 const PROXY_RETRY_ATTEMPTS = 3;
 const PROXY_RETRY_DELAY_MS = 250;
+
+function getEmbeddedHeadersParam(parsedUrl) {
+  return parsedUrl.searchParams.get(EMBEDDED_HEADERS_PARAM) || parsedUrl.searchParams.get(LEGACY_HEADERS_PARAM);
+}
+
+function getEmbeddedHostParam(parsedUrl) {
+  return parsedUrl.searchParams.get(EMBEDDED_HOST_PARAM) || parsedUrl.searchParams.get(LEGACY_HOST_PARAM);
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -39,7 +51,7 @@ function filterForwardHeaders(headers = {}) {
 function parseEmbeddedHeaders(targetUrl) {
   try {
     const parsed = new URL(targetUrl);
-    const embedded = parsed.searchParams.get(EMBEDDED_HEADERS_PARAM);
+    const embedded = getEmbeddedHeadersParam(parsed);
     if (!embedded) {
       return {};
     }
@@ -53,7 +65,12 @@ function parseEmbeddedHeaders(targetUrl) {
 function hasEmbeddedProxyParams(targetUrl) {
   try {
     const parsed = new URL(targetUrl);
-    return parsed.searchParams.has(EMBEDDED_HEADERS_PARAM) || parsed.searchParams.has(EMBEDDED_HOST_PARAM);
+    return (
+      parsed.searchParams.has(EMBEDDED_HEADERS_PARAM) ||
+      parsed.searchParams.has(EMBEDDED_HOST_PARAM) ||
+      parsed.searchParams.has(LEGACY_HEADERS_PARAM) ||
+      parsed.searchParams.has(LEGACY_HOST_PARAM)
+    );
   } catch {
     return false;
   }
@@ -62,7 +79,7 @@ function hasEmbeddedProxyParams(targetUrl) {
 function parseEmbeddedHost(targetUrl) {
   try {
     const parsed = new URL(targetUrl);
-    const embeddedHost = parsed.searchParams.get(EMBEDDED_HOST_PARAM);
+    const embeddedHost = getEmbeddedHostParam(parsed);
     if (!embeddedHost) {
       return '';
     }
@@ -73,35 +90,12 @@ function parseEmbeddedHost(targetUrl) {
   }
 }
 
-function parseEmbeddedHostUrl(targetUrl) {
-  try {
-    const parsed = new URL(targetUrl);
-    const embeddedHost = parsed.searchParams.get(EMBEDDED_HOST_PARAM);
-    if (!embeddedHost) {
-      return null;
-    }
-
-    return new URL(embeddedHost.includes('://') ? embeddedHost : `https://${embeddedHost}`);
-  } catch {
-    return null;
-  }
-}
-
 function stripEmbeddedProxyParams(targetUrl) {
   const parsed = new URL(targetUrl);
   parsed.searchParams.delete(EMBEDDED_HEADERS_PARAM);
   parsed.searchParams.delete(EMBEDDED_HOST_PARAM);
-  return parsed.toString();
-}
-
-function applyEmbeddedHost(targetUrl, embeddedHostUrl) {
-  if (!embeddedHostUrl) {
-    return targetUrl;
-  }
-
-  const parsed = new URL(targetUrl);
-  parsed.protocol = embeddedHostUrl.protocol;
-  parsed.host = embeddedHostUrl.host;
+  parsed.searchParams.delete(LEGACY_HEADERS_PARAM);
+  parsed.searchParams.delete(LEGACY_HOST_PARAM);
   return parsed.toString();
 }
 
@@ -143,13 +137,51 @@ function isPlaylistResponse(targetUrl, contentType = '') {
   return /mpegurl|application\/vnd\.apple\.mpegurl|audio\/mpegurl/i.test(contentType) || /\.m3u8(\?|$)/i.test(String(targetUrl || ''));
 }
 
+function shouldForwardLengthMetadata(upstream) {
+  return !String(upstream.headers.get('content-encoding') || '').trim();
+}
+
+function isLikelyTransportSegment(targetUrl) {
+  try {
+    const parsed = new URL(String(targetUrl || ''));
+    const pathname = decodeURIComponent(parsed.pathname).toLowerCase();
+
+    if (!pathname.includes('/file2/')) {
+      return false;
+    }
+
+    return /\.(?:jpg|jpeg|png|webp|html|js|css|txt|ico)(?:$|\?)/i.test(pathname);
+  } catch {
+    return false;
+  }
+}
+
+function setProxyLogMode(res, mode) {
+  res.locals.proxyLogMode = mode;
+}
+
+function rewritePlaylistDirectiveUris(line, playlistUrl, proxyBaseUrl, forwardedHeaders = {}) {
+  if (!/URI="/i.test(line)) {
+    return line;
+  }
+
+  return line.replace(/URI="([^"]+)"/gi, (_match, uri) => {
+    const nextUrl = buildAbsolutePlaylistUrl(playlistUrl, uri);
+    return `URI="${buildProxyUrl(proxyBaseUrl, nextUrl, forwardedHeaders)}"`;
+  });
+}
+
 function rewritePlaylistBody(body, playlistUrl, proxyBaseUrl, forwardedHeaders = {}) {
   return String(body || '')
     .split(/\r?\n/)
     .map((line) => {
       const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) {
+      if (!trimmed) {
         return line;
+      }
+
+      if (trimmed.startsWith('#')) {
+        return rewritePlaylistDirectiveUris(line, playlistUrl, proxyBaseUrl, forwardedHeaders);
       }
 
       const nextUrl = buildAbsolutePlaylistUrl(playlistUrl, trimmed);
@@ -161,6 +193,7 @@ function rewritePlaylistBody(body, playlistUrl, proxyBaseUrl, forwardedHeaders =
 router.get('/', async (req, res) => {
   const targetUrl = String(req.query.url || '').trim();
   if (!targetUrl) {
+    setProxyLogMode(res, 'error');
     return res.status(400).json({ error: 'url required' });
   }
 
@@ -169,6 +202,7 @@ router.get('/', async (req, res) => {
     try {
       parsedHeaders = filterForwardHeaders(JSON.parse(String(req.query.headers)));
     } catch {
+      setProxyLogMode(res, 'error');
       return res.status(400).json({ error: 'invalid headers' });
     }
   }
@@ -177,21 +211,21 @@ router.get('/', async (req, res) => {
   try {
     upstreamUrl = stripEmbeddedProxyParams(targetUrl);
   } catch {
+    setProxyLogMode(res, 'error');
     return res.status(400).json({ error: 'invalid url' });
-  }
-
-  const embeddedHostUrl = parseEmbeddedHostUrl(targetUrl);
-  if (embeddedHostUrl) {
-    upstreamUrl = applyEmbeddedHost(upstreamUrl, embeddedHostUrl);
   }
 
   const embeddedHeaders = parseEmbeddedHeaders(targetUrl);
   const useEmbeddedHeaders = hasEmbeddedProxyParams(targetUrl);
+  const requestHeaders = filterForwardHeaders({
+    range: typeof req.headers.range === 'string' ? req.headers.range : ''
+  });
   const upstreamHeaders = useEmbeddedHeaders
-    ? { ...embeddedHeaders }
+    ? { ...embeddedHeaders, ...requestHeaders }
     : {
         ...parsedHeaders,
         ...embeddedHeaders,
+        ...requestHeaders,
       };
   const embeddedHost = parseEmbeddedHost(targetUrl);
 
@@ -203,6 +237,28 @@ router.get('/', async (req, res) => {
     upstreamHeaders.accept = '*/*';
   }
 
+  if (!upstreamHeaders['accept-encoding']) {
+    upstreamHeaders['accept-encoding'] = 'identity';
+  }
+
+  if (embeddedHost && !upstreamHeaders.host) {
+    upstreamHeaders.host = embeddedHost;
+  }
+
+  const abortController = new AbortController();
+  const abortUpstream = () => {
+    if (!abortController.signal.aborted) {
+      abortController.abort();
+    }
+  };
+
+  req.once('aborted', abortUpstream);
+  res.once('close', () => {
+    if (!res.writableEnded) {
+      abortUpstream();
+    }
+  });
+
   try {
     let upstream = null;
 
@@ -212,6 +268,7 @@ router.get('/', async (req, res) => {
           redirect: 'follow',
           headers: upstreamHeaders,
           dispatcher: playbackProxyAgent || undefined,
+          signal: abortController.signal,
         });
 
         if (!isRetryableStatus(upstream.status) || attempt === PROXY_RETRY_ATTEMPTS) {
@@ -230,18 +287,30 @@ router.get('/', async (req, res) => {
       await sleep(PROXY_RETRY_DELAY_MS * attempt);
     }
 
-    console.log(new Date().toISOString(), '[proxy] upstream', upstream.status, upstreamUrl, embeddedHost ? `target-host=${embeddedHost}` : '');
-
     if (!upstream.ok) {
+      setProxyLogMode(res, 'error');
+      console.log(new Date().toISOString(), '[proxy] upstream', upstream.status, upstreamUrl, embeddedHost ? `target-host=${embeddedHost}` : '');
       return res.status(upstream.status).send(await upstream.text());
     }
 
-    const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
+    const upstreamContentType = upstream.headers.get('content-type') || 'application/octet-stream';
+    const contentType =
+      !isPlaylistResponse(upstreamUrl, upstreamContentType) && isLikelyTransportSegment(upstreamUrl)
+        ? 'video/mp2t'
+        : upstreamContentType;
+    const isPlaylist = isPlaylistResponse(targetUrl, contentType);
+    setProxyLogMode(res, isPlaylist ? 'playlist' : 'asset');
+
+    if (isPlaylist) {
+      console.log(new Date().toISOString(), '[proxy] upstream', upstream.status, upstreamUrl, embeddedHost ? `target-host=${embeddedHost}` : '');
+    }
+
+    res.status(upstream.status);
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'public, max-age=60');
 
-    if (isPlaylistResponse(targetUrl, contentType)) {
+    if (isPlaylist) {
       const playlistBody = await upstream.text();
       const rewritten = rewritePlaylistBody(
         playlistBody,
@@ -252,9 +321,39 @@ router.get('/', async (req, res) => {
       return res.send(rewritten);
     }
 
-    const buffer = Buffer.from(await upstream.arrayBuffer());
-    return res.send(buffer);
+    for (const headerName of ['accept-ranges', 'etag', 'last-modified']) {
+      const headerValue = upstream.headers.get(headerName);
+      if (headerValue) {
+        res.setHeader(headerName, headerValue);
+      }
+    }
+
+    if (shouldForwardLengthMetadata(upstream)) {
+      for (const headerName of ['content-length', 'content-range']) {
+        const headerValue = upstream.headers.get(headerName);
+        if (headerValue) {
+          res.setHeader(headerName, headerValue);
+        }
+      }
+    }
+
+    if (!upstream.body) {
+      return res.end();
+    }
+
+    await pipeline(Readable.fromWeb(upstream.body), res);
+    return;
   } catch (error) {
+    if (req.aborted || res.destroyed || abortController.signal.aborted) {
+      return;
+    }
+
+    setProxyLogMode(res, 'error');
+    if (res.headersSent) {
+      res.destroy(error instanceof Error ? error : undefined);
+      return;
+    }
+
     return res.status(502).json({ error: error?.message || 'proxy failed' });
   }
 });
