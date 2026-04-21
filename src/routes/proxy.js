@@ -2,6 +2,8 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { Router } from 'express';
 import { ProxyAgent } from 'undici';
+import { request as httpsRequest } from 'node:https';
+import { request as httpRequest } from 'node:http';
 
 const router = Router();
 const playbackProxyUrl = process.env.PLAYBACK_PROXY_URL || process.env.RESIDENTIAL_PROXY_URL || '';
@@ -55,8 +57,12 @@ function parseEmbeddedHeaders(targetUrl) {
     if (!embedded) {
       return {};
     }
-
-    return filterForwardHeaders(JSON.parse(embedded));
+    // Handle double-encoded values (e.g. %7B instead of {)
+    let decoded = embedded;
+    try {
+      decoded = decodeURIComponent(embedded);
+    } catch {}
+    return filterForwardHeaders(JSON.parse(decoded));
   } catch {
     return {};
   }
@@ -83,7 +89,6 @@ function parseEmbeddedHost(targetUrl) {
     if (!embeddedHost) {
       return '';
     }
-
     return embeddedHost.includes('://') ? new URL(embeddedHost).host : embeddedHost;
   } catch {
     return '';
@@ -215,18 +220,35 @@ router.get('/', async (req, res) => {
     return res.status(400).json({ error: 'invalid url' });
   }
 
-  const embeddedHeaders = parseEmbeddedHeaders(targetUrl);
+  const embeddedHeaders = parseEmbeddedHeaders(targetUrl); // reads from targetUrl BEFORE stripping
   const useEmbeddedHeaders = hasEmbeddedProxyParams(targetUrl);
+
+  // FIX: Extract headers embedded in the storm URL from targetUrl (before stripping),
+  // not from upstreamUrl (after stripping) where they're already gone.
+  let stormUrlHeaders = {};
+  try {
+    const stormParsed = new URL(targetUrl); // <-- targetUrl, not upstreamUrl
+    const headersParam = stormParsed.searchParams.get('headers');
+    if (headersParam) {
+      let decoded = headersParam;
+      try { decoded = decodeURIComponent(headersParam); } catch {}
+      stormUrlHeaders = filterForwardHeaders(JSON.parse(decoded));
+    }
+  } catch {}
+
   const requestHeaders = filterForwardHeaders({
     range: typeof req.headers.range === 'string' ? req.headers.range : ''
   });
-  const upstreamHeaders = useEmbeddedHeaders
-    ? { ...embeddedHeaders, ...requestHeaders }
-    : {
-        ...parsedHeaders,
-        ...embeddedHeaders,
-        ...requestHeaders,
-      };
+
+  // FIX: Always include parsedHeaders (contains user-agent from client).
+  // Previously parsedHeaders was dropped when useEmbeddedHeaders was true.
+  const upstreamHeaders = {
+    ...parsedHeaders,
+    ...stormUrlHeaders,
+    ...embeddedHeaders,
+    ...requestHeaders,
+  };
+
   const embeddedHost = parseEmbeddedHost(targetUrl);
 
   if (!upstreamHeaders['user-agent']) {
@@ -241,9 +263,22 @@ router.get('/', async (req, res) => {
     upstreamHeaders['accept-encoding'] = 'identity';
   }
 
+  // Some CDNs now require sec-fetch-* headers to distinguish browser requests
+  if (!upstreamHeaders['sec-fetch-site']) {
+    upstreamHeaders['sec-fetch-site'] = 'cross-site';
+  }
+  if (!upstreamHeaders['sec-fetch-mode']) {
+    upstreamHeaders['sec-fetch-mode'] = 'no-cors';
+  }
+  if (!upstreamHeaders['sec-fetch-dest']) {
+    upstreamHeaders['sec-fetch-dest'] = 'video';
+  }
+
   if (embeddedHost && !upstreamHeaders.host) {
     upstreamHeaders.host = embeddedHost;
   }
+
+  console.log(new Date().toISOString(), '[proxy] headers:', JSON.stringify(upstreamHeaders));
 
   const abortController = new AbortController();
   const abortUpstream = () => {
@@ -260,16 +295,80 @@ router.get('/', async (req, res) => {
   });
 
   try {
+    // If the storm proxy URL specifies a target host, connect directly to it
+    // so Node.js sends the correct Host header (fetch() won't let us override Host)
+    let effectiveUrl = upstreamUrl;
+    if (embeddedHost) {
+      try {
+        const targetHost = new URL(embeddedHost);
+        const originalParsed = new URL(upstreamUrl);
+        originalParsed.hostname = targetHost.hostname;
+        // Remove storm-specific params that the target CDN doesn't need
+        originalParsed.searchParams.delete('headers');
+        originalParsed.searchParams.delete('host');
+        originalParsed.searchParams.delete(EMBEDDED_HEADERS_PARAM);
+        originalParsed.searchParams.delete(EMBEDDED_HOST_PARAM);
+        effectiveUrl = originalParsed.toString();
+        console.log(new Date().toISOString(), '[proxy] direct host URL:', effectiveUrl);
+      } catch {
+        // Fall through to original URL
+      }
+    }
+
     let upstream = null;
 
     for (let attempt = 1; attempt <= PROXY_RETRY_ATTEMPTS; attempt += 1) {
       try {
-        upstream = await fetch(upstreamUrl, {
-          redirect: 'follow',
-          headers: upstreamHeaders,
-          dispatcher: playbackProxyAgent || undefined,
-          signal: abortController.signal,
+        // Use https.request directly — gives us full control over headers including Host
+        const parsedUrl = new URL(effectiveUrl);
+        const isHttps = parsedUrl.protocol === 'https:';
+        const nodeReq = isHttps ? httpsRequest : httpRequest;
+
+        upstream = await new Promise((resolve, reject) => {
+          const req = nodeReq({
+            hostname: parsedUrl.hostname,
+            port: parsedUrl.port || (isHttps ? 443 : 80),
+            path: parsedUrl.pathname + parsedUrl.search,
+            method: 'GET',
+            headers: upstreamHeaders,
+            timeout: 30000,
+          }, (res) => {
+            // Convert IncomingMessage to a fetch-like Response object
+            const bodyStream = Readable.from(res);
+            resolve({
+              ok: res.statusCode >= 200 && res.statusCode < 300,
+              status: res.statusCode,
+              statusText: res.statusMessage,
+              headers: res.headers,
+              body: bodyStream,
+              text: () => new Promise((resolveText) => {
+                let data = '';
+                res.on('data', (chunk) => { data += chunk; });
+                res.on('end', () => resolveText(data));
+              }),
+              arrayBuffer: () => new Promise((resolveBuf) => {
+                const chunks = [];
+                res.on('data', (chunk) => { chunks.push(chunk); });
+                res.on('end', () => resolveBuf(Buffer.concat(chunks)));
+              }),
+            });
+          });
+
+          req.on('error', reject);
+          req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+          req.end();
         });
+
+        // Normalize headers to a Headers-like object for downstream compatibility
+        const rawHeaders = upstream.headers;
+        upstream.headers = {
+          get: (name) => {
+            const key = name.toLowerCase();
+            // Handle both array and string forms
+            const val = rawHeaders[key];
+            return Array.isArray(val) ? val.join(', ') : val || null;
+          },
+        };
 
         if (!isRetryableStatus(upstream.status) || attempt === PROXY_RETRY_ATTEMPTS) {
           break;
@@ -301,23 +400,24 @@ router.get('/', async (req, res) => {
     const isPlaylist = isPlaylistResponse(targetUrl, contentType);
     setProxyLogMode(res, isPlaylist ? 'playlist' : 'asset');
 
-    if (isPlaylist) {
-      console.log(new Date().toISOString(), '[proxy] upstream', upstream.status, upstreamUrl, embeddedHost ? `target-host=${embeddedHost}` : '');
-    }
-
     res.status(upstream.status);
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'public, max-age=60');
 
+    // FIX: Build rewritten playlist BEFORE logging its length.
+    // Previously `rewritten` was logged before it was defined (ReferenceError).
     if (isPlaylist) {
       const playlistBody = await upstream.text();
+      const segmentHeaders = useEmbeddedHeaders ? embeddedHeaders : upstreamHeaders;
       const rewritten = rewritePlaylistBody(
         playlistBody,
         targetUrl,
         getProxyBaseUrl(req),
-        useEmbeddedHeaders ? {} : upstreamHeaders
+        segmentHeaders
       );
+      console.log(new Date().toISOString(), '[proxy] upstream', upstream.status, upstreamUrl, embeddedHost ? `target-host=${embeddedHost}` : '');
+      console.log(new Date().toISOString(), '[proxy] playlist rewritten, length:', rewritten.length);
       return res.send(rewritten);
     }
 

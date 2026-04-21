@@ -14,7 +14,8 @@ const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 const SIX_HOURS_MS = 6 * ONE_HOUR_MS;
 const currentDir = dirname(fileURLToPath(import.meta.url));
-const RESOLVE_CACHE_TTL_MS = Math.max(1, Number(process.env.RESOLVE_CACHE_TTL_MS || SIX_HOURS_MS) || SIX_HOURS_MS);
+const THIRTY_MIN_MS = 30 * 60 * 1000;
+const RESOLVE_CACHE_TTL_MS = Math.max(1, Number(process.env.RESOLVE_CACHE_TTL_MS || THIRTY_MIN_MS) || THIRTY_MIN_MS);
 const cache = createCacheStore({
   defaultTtlMs: RESOLVE_CACHE_TTL_MS,
   persistPath: process.env.RESOLVE_CACHE_PATH || resolvePath(currentDir, '../../.cache/resolve-cache.json')
@@ -266,6 +267,36 @@ function buildAbsolutePlaylistUrl(playlistUrl, candidatePath) {
   return resolved.toString();
 }
 
+export function withProxiedPlaybackUrls(result, req) {
+  const proxyBaseUrl = getProxyBaseUrl(req);
+  const headers = result?.headers || {};
+  const primaryUrl = result.stream || result.url;
+
+  const nextQualities = Array.isArray(result?.qualities)
+    ? result.qualities.map((entry) => {
+        if (!shouldProxyPlaybackUrl(entry?.url, headers, entry?.type || result?.type)) {
+          return entry;
+        }
+        return {
+          ...entry,
+          url: buildProxyPlaybackUrl(proxyBaseUrl, entry.url, headers)
+        };
+      })
+    : [];
+
+  let finalUrl = primaryUrl;
+  if (shouldProxyPlaybackUrl(primaryUrl, headers, result?.type)) {
+    finalUrl = buildProxyPlaybackUrl(proxyBaseUrl, primaryUrl, headers);
+  }
+
+  return {
+    ...result,
+    url: finalUrl,
+    stream: finalUrl,
+    qualities: nextQualities
+  };
+}
+
 function shouldProxyPlaybackUrl(targetUrl, headers = {}, type = '') {
   const normalizedHeaders = sanitizePlaybackHeaders(headers);
   if (Object.keys(normalizedHeaders).length > 0) {
@@ -273,7 +304,6 @@ function shouldProxyPlaybackUrl(targetUrl, headers = {}, type = '') {
   }
 
   const normalizedType = String(type || '').toUpperCase();
-
   return ['HLS', 'FLV'].includes(normalizedType) || /\.(m3u8|flv)(\?|$)/i.test(String(targetUrl || ''));
 }
 
@@ -303,32 +333,6 @@ function buildProxyPlaybackUrl(proxyBaseUrl, targetUrl, headers = {}) {
   }
 
   return proxied.toString();
-}
-
-function withProxiedPlaybackUrls(result, req) {
-  const proxyBaseUrl = getProxyBaseUrl(req);
-
-  const nextQualities = Array.isArray(result?.qualities)
-    ? result.qualities.map((entry) => {
-        if (!shouldProxyPlaybackUrl(entry?.url, result?.headers || {}, entry?.type || result?.type)) {
-          return entry;
-        }
-
-        return {
-          ...entry,
-          url: buildProxyPlaybackUrl(proxyBaseUrl, entry.url, result.headers || {})
-        };
-      })
-    : [];
-
-  const shouldProxyPrimary = shouldProxyPlaybackUrl(result?.url, result?.headers || {}, result?.type);
-
-  return {
-    ...result,
-    url: shouldProxyPrimary ? buildProxyPlaybackUrl(proxyBaseUrl, result.url, result.headers || {}) : result.url,
-    stream: shouldProxyPrimary ? buildProxyPlaybackUrl(proxyBaseUrl, result.stream || result.url, result.headers || {}) : (result.stream || result.url),
-    qualities: nextQualities
-  };
 }
 
 function buildFallbackMasterPlaylistUrls(playlistUrl) {

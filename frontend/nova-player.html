@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NOVA Player</title>
+    <style>
+      :root {
+        --bg: #09111e;
+        --panel: rgba(10, 16, 28, 0.62);
+        --panel-strong: rgba(6, 11, 19, 0.82);
+        --line: rgba(255, 255, 255, 0.12);
+        --text: #f4f7fb;
+        --muted: rgba(244, 247, 251, 0.62);
+        --accent: #ffffff;
+        --danger: #ff7b72;
+        --shadow: 0 22px 80px rgba(0, 0, 0, 0.45);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+      }
+
+      body {
+        overflow: hidden;
+      }
+
+      .player-shell {
+        position: relative;
+        height: 100vh;
+        width: 100vw;
+        background:
+          radial-gradient(circle at top left, rgba(124, 177, 255, 0.2), transparent 38%),
+          linear-gradient(145deg, rgba(9, 17, 30, 0.32), rgba(5, 10, 18, 0.88));
+      }
+
+      .backdrop,
+      .video {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+
+      .backdrop {
+        background-position: center;
+        background-size: cover;
+        filter: saturate(1.12) blur(2px);
+        transform: scale(1.03);
+      }
+
+      .video {
+        object-fit: cover;
+        background: transparent;
+      }
+
+      .scrim {
+        position: absolute;
+        inset: 0;
+        background:
+          linear-gradient(180deg, rgba(7, 14, 24, 0.18), rgba(7, 14, 24, 0.78)),
+          linear-gradient(0deg, rgba(7, 14, 24, 0.94), rgba(7, 14, 24, 0.18));
+      }
+
+      .topbar,
+      .bottombar,
+      .play-overlay,
+      .drawer,
+      .status-panel {
+        position: absolute;
+        z-index: 2;
+      }
+
+      .topbar {
+        left: 20px;
+        right: 20px;
+        top: 22px;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+      }
+
+      .title-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 16px;
+        border: 1px solid var(--line);
+        background: rgba(7, 14, 24, 0.5);
+        backdrop-filter: blur(20px);
+        border-radius: 999px;
+        box-shadow: var(--shadow);
+      }
+
+      .title-chip .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.75);
+      }
+
+      .window-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .ghost-icon,
+      .action-button,
+      .server-item,
+      .hero-play {
+        border: 0;
+        cursor: pointer;
+      }
+
+      .ghost-icon,
+      .action-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        border-radius: 14px;
+        color: var(--text);
+        background: rgba(7, 14, 24, 0.34);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        backdrop-filter: blur(18px);
+      }
+
+      .play-overlay {
+        inset: 0;
+        display: grid;
+        place-items: center;
+        pointer-events: none;
+      }
+
+      .hero-play {
+        pointer-events: auto;
+        width: 96px;
+        height: 96px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.14);
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        backdrop-filter: blur(20px);
+        color: white;
+        box-shadow: var(--shadow);
+      }
+
+      .hero-play svg {
+        width: 34px;
+        height: 34px;
+        margin-left: 4px;
+      }
+
+      .status-panel {
+        left: 32px;
+        bottom: 114px;
+        max-width: min(560px, calc(100vw - 64px));
+      }
+
+      .eyebrow {
+        font-size: 12px;
+        letter-spacing: 0.24em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 10px;
+      }
+
+      .headline {
+        font-size: clamp(26px, 3.2vw, 44px);
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin: 0 0 8px;
+      }
+
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        font-size: 15px;
+        color: rgba(255, 255, 255, 0.78);
+      }
+
+      .status-line {
+        margin-top: 14px;
+        font-size: 13px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.48);
+      }
+
+      .bottombar {
+        left: 28px;
+        right: 28px;
+        bottom: 26px;
+        padding: 14px 18px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        backdrop-filter: blur(22px);
+        box-shadow: var(--shadow);
+      }
+
+      .progress {
+        width: 100%;
+        appearance: none;
+        height: 4px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.12);
+        margin: 0 0 12px;
+      }
+
+      .progress::-webkit-slider-thumb,
+      .volume::-webkit-slider-thumb {
+        appearance: none;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: white;
+      }
+
+      .bar-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+      }
+
+      .controls-left,
+      .controls-right {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .time-label,
+      .server-label {
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.82);
+      }
+
+      .volume {
+        width: 92px;
+        appearance: none;
+        height: 4px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.12);
+      }
+
+      .pill-button {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 14px;
+        border-radius: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--text);
+      }
+
+      .drawer {
+        top: 0;
+        right: 0;
+        width: min(380px, 92vw);
+        height: 100vh;
+        padding: 28px 22px;
+        background: var(--panel-strong);
+        border-left: 1px solid rgba(255, 255, 255, 0.08);
+        backdrop-filter: blur(30px);
+        transform: translateX(100%);
+        transition: transform 220ms ease;
+        box-shadow: var(--shadow);
+      }
+
+      .drawer.open {
+        transform: translateX(0);
+      }
+
+      .drawer-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 18px;
+      }
+
+      .drawer-title {
+        margin: 0;
+        font-size: 20px;
+      }
+
+      .drawer-copy {
+        margin: 0 0 18px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      .server-list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .server-item {
+        padding: 16px;
+        border-radius: 18px;
+        text-align: left;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        color: var(--text);
+      }
+
+      .server-item.active {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.24);
+      }
+
+      .server-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 8px;
+      }
+
+      .server-accent {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex: none;
+      }
+
+      .server-id {
+        font-size: 15px;
+        font-weight: 700;
+      }
+
+      .server-desc,
+      .server-url,
+      .empty-copy {
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .drawer-footer {
+        margin-top: 18px;
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.38);
+      }
+
+      @media (max-width: 760px) {
+        .headline {
+          font-size: 26px;
+        }
+
+        .status-panel {
+          bottom: 148px;
+        }
+
+        .bar-row {
+          flex-direction: column;
+          align-items: stretch;
+        }
+
+        .controls-right {
+          justify-content: space-between;
+        }
+
+        .volume {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="player-shell">
+      <div class="backdrop" id="backdrop"></div>
+      <video class="video" id="video" playsinline preload="metadata"></video>
+      <div class="scrim"></div>
+
+      <div class="topbar">
+        <div class="title-chip" id="chip">
+          <span class="dot"></span>
+          <span id="chip-label">Loading…</span>
+        </div>
+        <div class="window-actions">
+          <button class="ghost-icon" id="server-shortcut" aria-label="Open servers">
+            ☰
+          </button>
+          <button class="ghost-icon" id="close-window" aria-label="Close">
+            ×
+          </button>
+        </div>
+      </div>
+
+      <div class="play-overlay">
+        <button class="hero-play" id="hero-play" aria-label="Play">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M8 5.14v13.72c0 .78.85 1.26 1.52.86l10.07-6.86a1 1 0 0 0 0-1.72L9.52 4.28A1 1 0 0 0 8 5.14Z"></path>
+          </svg>
+        </button>
+      </div>
+
+      <section class="status-panel">
+        <div class="eyebrow" id="eyebrow">NOVA STREAM</div>
+        <h1 class="headline" id="headline">Loading…</h1>
+        <div class="meta" id="meta"></div>
+        <div class="status-line" id="status-line">Preparing player</div>
+      </section>
+
+      <div class="bottombar">
+        <input class="progress" id="progress" type="range" min="0" max="100" value="0" />
+        <div class="bar-row">
+          <div class="controls-left">
+            <button class="action-button" id="toggle-play" aria-label="Play or pause">❚❚</button>
+            <button class="action-button" id="toggle-mute" aria-label="Mute">🔊</button>
+            <input class="volume" id="volume" type="range" min="0" max="1" step="0.05" value="1" />
+            <span class="time-label" id="time-label">0:00 / 0:00</span>
+          </div>
+          <div class="controls-right">
+            <button class="pill-button" id="episode-button">Episodes</button>
+            <button class="pill-button" id="servers-button">Servers</button>
+            <span class="server-label" id="server-label">No server selected</span>
+            <button class="action-button" id="fullscreen-button" aria-label="Fullscreen">⛶</button>
+          </div>
+        </div>
+      </div>
+
+      <aside class="drawer" id="drawer" aria-hidden="true">
+        <div class="drawer-header">
+          <h2 class="drawer-title">Servers</h2>
+          <button class="ghost-icon" id="close-drawer" aria-label="Close servers">×</button>
+        </div>
+        <p class="drawer-copy">
+          Switch sources here. NOVA sends the selected embed to the Node backend, waits for a playable stream, then attaches it to the player.
+        </p>
+        <div class="server-list" id="server-list"></div>
+        <div class="drawer-footer" id="drawer-footer">Waiting for source list</div>
+      </aside>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script type="module" src="./nova-player.js"></script>
+  </body>
+</html>
