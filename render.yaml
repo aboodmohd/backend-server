@@ -1,15 +1,15 @@
 services:
   - type: web
     name: video-sniff
-    runtime: node
-    buildCommand: npm install && PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install chromium && PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install-deps chromium
-    startCommand: npm start
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 3000
-      - key: PLAYWRIGHT_BROWSERS_PATH
-        value: 0
+        value: 10000
       - key: RESOLVE_TIMEOUT_MS
         value: 30000
+      - key: NOVA_SKIP_BROWSER_WARMUP
+        value: 0
