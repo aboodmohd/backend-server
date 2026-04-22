@@ -274,7 +274,7 @@ export function withProxiedPlaybackUrls(result, req) {
 
   const nextQualities = Array.isArray(result?.qualities)
     ? result.qualities.map((entry) => {
-        if (!shouldProxyPlaybackUrl(entry?.url, headers, entry?.type || result?.type)) {
+        if (!shouldProxyPlaybackUrl(entry?.url, headers, entry?.type || result?.type, req)) {
           return entry;
         }
         return {
@@ -285,7 +285,7 @@ export function withProxiedPlaybackUrls(result, req) {
     : [];
 
   let finalUrl = primaryUrl;
-  if (shouldProxyPlaybackUrl(primaryUrl, headers, result?.type)) {
+  if (shouldProxyPlaybackUrl(primaryUrl, headers, result?.type, req)) {
     finalUrl = buildProxyPlaybackUrl(proxyBaseUrl, primaryUrl, headers);
   }
 
@@ -297,14 +297,27 @@ export function withProxiedPlaybackUrls(result, req) {
   };
 }
 
-function shouldProxyPlaybackUrl(targetUrl, headers = {}, type = '') {
-  const normalizedHeaders = sanitizePlaybackHeaders(headers);
-  if (Object.keys(normalizedHeaders).length > 0) {
-    return true;
+function shouldProxyPlaybackUrl(targetUrl, headers = {}, type = '', req) {
+  const target = String(targetUrl || '').trim();
+  if (!target) {
+    return false;
   }
 
-  const normalizedType = String(type || '').toUpperCase();
-  return ['HLS', 'FLV'].includes(normalizedType) || /\.(m3u8|flv)(\?|$)/i.test(String(targetUrl || ''));
+  try {
+    const parsed = new URL(target);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return false;
+    }
+
+    const requestHost = String(req?.get?.('host') || '').trim().toLowerCase();
+    if (requestHost && parsed.host.toLowerCase() === requestHost && parsed.pathname.startsWith('/proxy')) {
+      return false;
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function getProxyBaseUrl(req) {
