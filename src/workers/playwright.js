@@ -359,6 +359,14 @@ function isVidfastUrl(url) {
   }
 }
 
+function isVidlinkUrl(url) {
+  try {
+    return /(^|\.)vidlink\.pro$/i.test(new URL(String(url || '')).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function isVidcoreUrl(url) {
   try {
     return /(^|\.)vidcore\.net$/i.test(new URL(String(url || '')).hostname);
