@@ -36,6 +36,69 @@ const NON_STREAM_ASSET_PATTERNS = [
   /\/favicon\.ico(?:\?|$)/i
 ];
 
+function parsePlaybackEmbeddedHost(targetUrl = '') {
+  try {
+    const parsed = new URL(targetUrl);
+    const hostParam = parsed.searchParams.get('__proxy_host') || parsed.searchParams.get('host') || '';
+    if (!hostParam) {
+      return '';
+    }
+
+    return hostParam.includes('://') ? new URL(hostParam).toString() : `https://${hostParam}`;
+  } catch {
+    return '';
+  }
+}
+
+function buildCookieHeader(cookies = []) {
+  return cookies
+    .filter((cookie) => cookie?.name && cookie?.value)
+    .map((cookie) => `${cookie.name}=${cookie.value}`)
+    .join('; ');
+}
+
+async function warmPlaybackSession(context, playbackUrl = '') {
+  const targetOrigins = [playbackUrl, parsePlaybackEmbeddedHost(playbackUrl)].filter(Boolean);
+  if (!targetOrigins.length) {
+    return '';
+  }
+
+  const page = await context.newPage();
+
+  try {
+    await page.goto(playbackUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 15000
+    }).catch(() => undefined);
+
+    await page.waitForTimeout(1500).catch(() => undefined);
+
+    const cookies = await context.cookies(targetOrigins).catch(() => []);
+    return buildCookieHeader(cookies);
+  } finally {
+    await page.close().catch(() => undefined);
+  }
+}
+
+async function enrichPlaybackResult(targetUrl, result, context) {
+  if (!isVidlinkUrl(targetUrl) || !result?.url) {
+    return result;
+  }
+
+  const cookieHeader = await warmPlaybackSession(context, result.url).catch(() => '');
+  if (!cookieHeader) {
+    return result;
+  }
+
+  return {
+    ...result,
+    headers: {
+      ...(result.headers || {}),
+      cookie: cookieHeader
+    }
+  };
+}
+
 function clearBrowserState(reason = '') {
   if (reason) {
     console.log(new Date().toISOString(), '[browser] reset', reason);
@@ -1229,8 +1292,10 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   };
 
   const emitFound = async (result) => {
+    const enrichedResult = await enrichPlaybackResult(targetUrl, result, context);
+
     onFound({
-      ...result,
+      ...enrichedResult,
       resolverHints: vidfastResolverHints.length ? { vidfastRequests: [...vidfastResolverHints] } : undefined
     });
 

@@ -104,7 +104,7 @@ function hasErrorCode(error, code) {
 }
 
 function sanitizePlaybackHeaders(headers = {}) {
-  const allowed = new Set(['referer', 'origin', 'user-agent', 'range']);
+  const allowed = new Set(['referer', 'origin', 'user-agent', 'range', 'cookie']);
   return Object.entries(normalizeHeaders(headers)).reduce((acc, [key, value]) => {
     if (allowed.has(key)) {
       acc[key] = value;
