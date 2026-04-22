@@ -179,6 +179,18 @@ function shouldForwardLengthMetadata(upstream) {
   return !String(upstream.headers.get('content-encoding') || '').trim();
 }
 
+function normalizeFetchResponse(response) {
+  return {
+    ok: response.ok,
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+    body: response.body,
+    text: () => response.text(),
+    arrayBuffer: () => response.arrayBuffer(),
+  };
+}
+
 function isLikelyTransportSegment(targetUrl) {
   try {
     const parsed = new URL(String(targetUrl || ''));
@@ -303,7 +315,7 @@ router.get('/', async (req, res) => {
   }
 
   if (!upstreamHeaders['accept-encoding']) {
-    upstreamHeaders['accept-encoding'] = 'identity';
+    upstreamHeaders['accept-encoding'] = preserveEmbeddedProxyParams ? 'gzip, deflate, br' : 'identity';
   }
 
   // Match the browser-style fetch profile seen in vidlink/storm captures.
@@ -373,56 +385,64 @@ router.get('/', async (req, res) => {
 
     for (let attempt = 1; attempt <= PROXY_RETRY_ATTEMPTS; attempt += 1) {
       try {
-        // Use https.request directly — gives us full control over headers including Host
-        const parsedUrl = new URL(effectiveUrl);
-        const isHttps = parsedUrl.protocol === 'https:';
-        const nodeReq = isHttps ? httpsRequest : httpRequest;
-
-        upstream = await new Promise((resolve, reject) => {
-          const req = nodeReq({
-            hostname: parsedUrl.hostname,
-            port: parsedUrl.port || (isHttps ? 443 : 80),
-            path: parsedUrl.pathname + parsedUrl.search,
+        if (preserveEmbeddedProxyParams || !embeddedHost) {
+          const response = await fetch(effectiveUrl, {
             method: 'GET',
             headers: upstreamHeaders,
-            timeout: 30000,
-          }, (res) => {
-            // Convert IncomingMessage to a fetch-like Response object
-            const bodyStream = Readable.from(res);
-            resolve({
-              ok: res.statusCode >= 200 && res.statusCode < 300,
-              status: res.statusCode,
-              statusText: res.statusMessage,
-              headers: res.headers,
-              body: bodyStream,
-              text: () => new Promise((resolveText) => {
-                let data = '';
-                res.on('data', (chunk) => { data += chunk; });
-                res.on('end', () => resolveText(data));
-              }),
-              arrayBuffer: () => new Promise((resolveBuf) => {
-                const chunks = [];
-                res.on('data', (chunk) => { chunks.push(chunk); });
-                res.on('end', () => resolveBuf(Buffer.concat(chunks)));
-              }),
+            signal: abortController.signal,
+            dispatcher: playbackProxyAgent || undefined,
+          });
+          upstream = normalizeFetchResponse(response);
+        } else {
+          // Use https.request directly only when we need explicit host override control.
+          const parsedUrl = new URL(effectiveUrl);
+          const isHttps = parsedUrl.protocol === 'https:';
+          const nodeReq = isHttps ? httpsRequest : httpRequest;
+
+          upstream = await new Promise((resolve, reject) => {
+            const req = nodeReq({
+              hostname: parsedUrl.hostname,
+              port: parsedUrl.port || (isHttps ? 443 : 80),
+              path: parsedUrl.pathname + parsedUrl.search,
+              method: 'GET',
+              headers: upstreamHeaders,
+              timeout: 30000,
+            }, (res) => {
+              // Convert IncomingMessage to a fetch-like Response object
+              const bodyStream = Readable.from(res);
+              resolve({
+                ok: res.statusCode >= 200 && res.statusCode < 300,
+                status: res.statusCode,
+                statusText: res.statusMessage,
+                headers: res.headers,
+                body: bodyStream,
+                text: () => new Promise((resolveText) => {
+                  let data = '';
+                  res.on('data', (chunk) => { data += chunk; });
+                  res.on('end', () => resolveText(data));
+                }),
+                arrayBuffer: () => new Promise((resolveBuf) => {
+                  const chunks = [];
+                  res.on('data', (chunk) => { chunks.push(chunk); });
+                  res.on('end', () => resolveBuf(Buffer.concat(chunks)));
+                }),
+              });
             });
+
+            req.on('error', reject);
+            req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+            req.end();
           });
 
-          req.on('error', reject);
-          req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
-          req.end();
-        });
-
-        // Normalize headers to a Headers-like object for downstream compatibility
-        const rawHeaders = upstream.headers;
-        upstream.headers = {
-          get: (name) => {
-            const key = name.toLowerCase();
-            // Handle both array and string forms
-            const val = rawHeaders[key];
-            return Array.isArray(val) ? val.join(', ') : val || null;
-          },
-        };
+          const rawHeaders = upstream.headers;
+          upstream.headers = {
+            get: (name) => {
+              const key = name.toLowerCase();
+              const val = rawHeaders[key];
+              return Array.isArray(val) ? val.join(', ') : val || null;
+            },
+          };
+        }
 
         if (!isRetryableStatus(upstream.status) || attempt === PROXY_RETRY_ATTEMPTS) {
           break;
