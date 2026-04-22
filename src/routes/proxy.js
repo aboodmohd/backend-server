@@ -41,7 +41,18 @@ function normalizeHeaders(headers = {}) {
 }
 
 function filterForwardHeaders(headers = {}) {
-  const allowed = new Set(['referer', 'origin', 'user-agent', 'range', 'cookie']);
+  const allowed = new Set([
+    'referer',
+    'origin',
+    'user-agent',
+    'range',
+    'cookie',
+    'accept',
+    'accept-language',
+    'sec-fetch-site',
+    'sec-fetch-mode',
+    'sec-fetch-dest'
+  ]);
   return Object.entries(normalizeHeaders(headers)).reduce((acc, [key, value]) => {
     if (allowed.has(key)) {
       acc[key] = value;
@@ -250,9 +261,11 @@ router.get('/', async (req, res) => {
     }
   } catch {}
 
+  const isPlaylistRequest = isPlaylistResponse(targetUrl) || isPlaylistResponse(upstreamUrl);
   const requestHeaders = filterForwardHeaders({
+    ...req.headers,
     range:
-      isPlaylistResponse(targetUrl) || isPlaylistResponse(upstreamUrl)
+      isPlaylistRequest
         ? ''
         : (typeof req.headers.range === 'string' ? req.headers.range : '')
   });
@@ -276,19 +289,23 @@ router.get('/', async (req, res) => {
     upstreamHeaders.accept = '*/*';
   }
 
+  if (!upstreamHeaders['accept-language']) {
+    upstreamHeaders['accept-language'] = 'en-US,en;q=0.9';
+  }
+
   if (!upstreamHeaders['accept-encoding']) {
     upstreamHeaders['accept-encoding'] = 'identity';
   }
 
-  // Some CDNs now require sec-fetch-* headers to distinguish browser requests
+  // Match the browser-style fetch profile seen in vidlink/storm captures.
   if (!upstreamHeaders['sec-fetch-site']) {
     upstreamHeaders['sec-fetch-site'] = 'cross-site';
   }
   if (!upstreamHeaders['sec-fetch-mode']) {
-    upstreamHeaders['sec-fetch-mode'] = 'no-cors';
+    upstreamHeaders['sec-fetch-mode'] = isPlaylistRequest || hasEmbeddedProxyParams(targetUrl) ? 'cors' : 'no-cors';
   }
   if (!upstreamHeaders['sec-fetch-dest']) {
-    upstreamHeaders['sec-fetch-dest'] = 'video';
+    upstreamHeaders['sec-fetch-dest'] = isPlaylistRequest || hasEmbeddedProxyParams(targetUrl) ? 'empty' : 'video';
   }
 
   if (embeddedHost && !upstreamHeaders.host) {

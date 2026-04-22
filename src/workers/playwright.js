@@ -50,6 +50,30 @@ function parsePlaybackEmbeddedHost(targetUrl = '') {
   }
 }
 
+function parsePlaybackEmbeddedOrigins(targetUrl = '') {
+  try {
+    const parsed = new URL(targetUrl);
+    const encodedHeaders = parsed.searchParams.get('__proxy_headers') || parsed.searchParams.get('headers') || '';
+    if (!encodedHeaders) {
+      return [];
+    }
+
+    let decoded = encodedHeaders;
+    try {
+      decoded = decodeURIComponent(encodedHeaders);
+    } catch {}
+
+    const headers = JSON.parse(decoded);
+    return ['origin', 'referer']
+      .map((key) => String(headers?.[key] || '').trim())
+      .filter(Boolean)
+      .map((value) => new URL(value).origin)
+      .filter((value, index, entries) => entries.indexOf(value) === index);
+  } catch {
+    return [];
+  }
+}
+
 function buildCookieHeader(cookies = []) {
   return cookies
     .filter((cookie) => cookie?.name && cookie?.value)
@@ -58,7 +82,11 @@ function buildCookieHeader(cookies = []) {
 }
 
 async function warmPlaybackSession(context, playbackUrl = '') {
-  const targetOrigins = [playbackUrl, parsePlaybackEmbeddedHost(playbackUrl)].filter(Boolean);
+  const targetOrigins = [
+    playbackUrl,
+    parsePlaybackEmbeddedHost(playbackUrl),
+    ...parsePlaybackEmbeddedOrigins(playbackUrl)
+  ].filter(Boolean);
   if (!targetOrigins.length) {
     return '';
   }
