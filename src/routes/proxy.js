@@ -441,7 +441,12 @@ router.get('/', async (req, res) => {
       return res.end();
     }
 
-    await pipeline(Readable.fromWeb(upstream.body), res);
+    const upstreamBody =
+      typeof upstream.body?.getReader === 'function'
+        ? Readable.fromWeb(upstream.body)
+        : upstream.body;
+
+    await pipeline(upstreamBody, res);
     return;
   } catch (error) {
     if (req.aborted || res.destroyed || abortController.signal.aborted) {
