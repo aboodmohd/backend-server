@@ -95,7 +95,20 @@ function parseEmbeddedHost(targetUrl) {
   }
 }
 
+function shouldPreserveEmbeddedProxyParams(targetUrl) {
+  try {
+    const parsed = new URL(targetUrl);
+    return /\/proxy\/file2\//i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
 function stripEmbeddedProxyParams(targetUrl) {
+  if (shouldPreserveEmbeddedProxyParams(targetUrl)) {
+    return targetUrl;
+  }
+
   const parsed = new URL(targetUrl);
   parsed.searchParams.delete(EMBEDDED_HEADERS_PARAM);
   parsed.searchParams.delete(EMBEDDED_HOST_PARAM);
@@ -213,6 +226,7 @@ router.get('/', async (req, res) => {
   }
 
   let upstreamUrl = targetUrl;
+  const preserveEmbeddedProxyParams = shouldPreserveEmbeddedProxyParams(targetUrl);
   try {
     upstreamUrl = stripEmbeddedProxyParams(targetUrl);
   } catch {
@@ -252,7 +266,7 @@ router.get('/', async (req, res) => {
     ...requestHeaders,
   };
 
-  const embeddedHost = parseEmbeddedHost(targetUrl);
+  const embeddedHost = preserveEmbeddedProxyParams ? '' : parseEmbeddedHost(targetUrl);
 
   if (!upstreamHeaders['user-agent']) {
     upstreamHeaders['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
@@ -307,10 +321,12 @@ router.get('/', async (req, res) => {
         const originalParsed = new URL(upstreamUrl);
         originalParsed.hostname = targetHost.hostname;
         // Remove storm-specific params that the target CDN doesn't need
-        originalParsed.searchParams.delete('headers');
-        originalParsed.searchParams.delete('host');
-        originalParsed.searchParams.delete(EMBEDDED_HEADERS_PARAM);
-        originalParsed.searchParams.delete(EMBEDDED_HOST_PARAM);
+        if (!preserveEmbeddedProxyParams) {
+          originalParsed.searchParams.delete('headers');
+          originalParsed.searchParams.delete('host');
+          originalParsed.searchParams.delete(EMBEDDED_HEADERS_PARAM);
+          originalParsed.searchParams.delete(EMBEDDED_HOST_PARAM);
+        }
         effectiveUrl = originalParsed.toString();
         console.log(new Date().toISOString(), '[proxy] direct host URL:', effectiveUrl);
       } catch {
