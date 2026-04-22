@@ -318,7 +318,12 @@ router.get('/', async (req, res) => {
   }
 
   if (useEmbeddedHeaders) {
-    delete upstreamHeaders.cookie;
+    const resolvedCookie = parsedHeaders.cookie || stormUrlHeaders.cookie || embeddedHeaders.cookie || '';
+    if (resolvedCookie) {
+      upstreamHeaders.cookie = resolvedCookie;
+    } else {
+      delete upstreamHeaders.cookie;
+    }
   }
 
   if (embeddedHost && !upstreamHeaders.host) {
