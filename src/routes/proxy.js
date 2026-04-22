@@ -109,7 +109,16 @@ function parseEmbeddedHost(targetUrl) {
 function shouldPreserveEmbeddedProxyParams(targetUrl) {
   try {
     const parsed = new URL(targetUrl);
-    return /\/proxy\/file2\//i.test(parsed.pathname);
+    const rawPath = String(parsed.pathname || '');
+    const decodedPath = (() => {
+      try {
+        return decodeURIComponent(rawPath);
+      } catch {
+        return rawPath;
+      }
+    })();
+
+    return /\/proxy\/file2(?:\/|%2f)/i.test(rawPath) || /\/proxy\/file2\//i.test(decodedPath);
   } catch {
     return false;
   }
