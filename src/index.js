@@ -15,8 +15,41 @@ import videasyRoute from '../server/server.js';
 const app = express();
 const rootDir = dirname(fileURLToPath(import.meta.url));
 const shouldWarmBrowserOnStartup = String(process.env.NOVA_SKIP_BROWSER_WARMUP || '0') !== '1';
+const allowedCorsOrigins = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  process.env.FRONTEND_ORIGIN || '',
+  ...(process.env.CORS_ALLOWED_ORIGINS || '').split(',').map((entry) => entry.trim()),
+].filter(Boolean);
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin || allowedCorsOrigins.length === 0 || allowedCorsOrigins.includes(origin)) {
+      callback(null, true);
+      return;
+    }
 
-app.use(cors());
+    callback(new Error(`Origin ${origin} is not allowed by CORS`));
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+};
+
+function parseEmbeddedPlaybackHeaders(rawUrl = '') {
+  try {
+    const parsed = new URL(rawUrl);
+    const encodedHeaders =
+      parsed.searchParams.get('__proxy_headers') ||
+      parsed.searchParams.get('headers') ||
+      '';
+
+    return encodedHeaders ? JSON.parse(decodeURIComponent(encodedHeaders)) : {};
+  } catch {
+    return {};
+  }
+}
+
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 app.use(express.json());
 app.use((req, res, next) => {
   // Skip logging root, health checks, and HLS segment requests.
@@ -41,6 +74,39 @@ app.get('/', (_req, res) => {
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'video-sniff' });
+});
+
+app.post('/test-playlist', async (req, res) => {
+  const rawUrl = String(req.body?.url || '').trim();
+
+  if (!rawUrl) {
+    return res.status(400).json({ error: 'url required' });
+  }
+
+  const embeddedHeaders = parseEmbeddedPlaybackHeaders(rawUrl);
+
+  try {
+    const response = await fetch(rawUrl, {
+      headers: {
+        accept: '*/*',
+        'user-agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+          'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+          'Chrome/145.0.0.0 Safari/537.36',
+        ...embeddedHeaders,
+      },
+      redirect: 'follow',
+    });
+
+    const body = await response.text();
+    return res.json({
+      status: response.status,
+      headers: Object.fromEntries(response.headers.entries()),
+      preview: body.slice(0, 300),
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error?.message || String(error) });
+  }
 });
 
 app.use('/frontend', express.static(resolve(rootDir, '../frontend')));

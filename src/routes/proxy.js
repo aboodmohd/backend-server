@@ -407,8 +407,17 @@ router.get('/', async (req, res) => {
 
     if (!upstream.ok) {
       setProxyLogMode(res, 'error');
-      console.log(new Date().toISOString(), '[proxy] upstream', upstream.status, upstreamUrl, embeddedHost ? `target-host=${embeddedHost}` : '');
-      return res.status(upstream.status).send(await upstream.text());
+      const body = await upstream.text();
+      console.log(
+        new Date().toISOString(),
+        '[proxy] upstream',
+        upstream.status,
+        upstreamUrl,
+        embeddedHost ? `target-host=${embeddedHost}` : '',
+        `content-type=${upstream.headers.get('content-type') || 'unknown'}`,
+        `preview=${body.slice(0, 300).replace(/\s+/g, ' ')}`
+      );
+      return res.status(upstream.status).send(body);
     }
 
     const upstreamContentType = upstream.headers.get('content-type') || 'application/octet-stream';
