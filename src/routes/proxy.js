@@ -237,7 +237,10 @@ router.get('/', async (req, res) => {
   } catch {}
 
   const requestHeaders = filterForwardHeaders({
-    range: typeof req.headers.range === 'string' ? req.headers.range : ''
+    range:
+      isPlaylistResponse(targetUrl) || isPlaylistResponse(upstreamUrl)
+        ? ''
+        : (typeof req.headers.range === 'string' ? req.headers.range : '')
   });
 
   // FIX: Always include parsedHeaders (contains user-agent from client).
