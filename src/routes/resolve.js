@@ -2113,7 +2113,7 @@ export async function resolveStream(url) {
       if (settled) return;
       settled = true;
       reject(new Error('STREAM_NOT_FOUND'));
-    }, isVidfastUrl(url) ? 75000 : isVidkingUrl(url) ? 30000 : isVidzeeUrl(url) ? 24000 : isVideasyUrl(url) ? 18000 : RESOLVE_TIMEOUT_MS);
+    }, isVidfastUrl(url) ? 75000 : isVidlinkUrl(url) ? 45000 : isVidkingUrl(url) ? 30000 : isVidzeeUrl(url) ? 24000 : isVideasyUrl(url) ? 18000 : RESOLVE_TIMEOUT_MS);
 
     extractVideoUrls(
       resolvedSourceUrl,

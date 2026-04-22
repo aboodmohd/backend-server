@@ -81,6 +81,35 @@ function buildCookieHeader(cookies = []) {
     .join('; ');
 }
 
+function getVidlinkPlaybackHeaders(playbackUrl = '', headers = {}) {
+  const nextHeaders = {
+    accept: '*/*',
+    'accept-language': 'en-US,en;q=0.9',
+    'sec-fetch-site': 'cross-site',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-dest': 'empty',
+    ...(headers || {})
+  };
+
+  try {
+    const parsed = new URL(playbackUrl);
+    const encodedHeaders = parsed.searchParams.get('__proxy_headers') || parsed.searchParams.get('headers') || '';
+    if (encodedHeaders) {
+      let decoded = encodedHeaders;
+      try {
+        decoded = decodeURIComponent(encodedHeaders);
+      } catch {}
+
+      const embeddedHeaders = JSON.parse(decoded);
+      Object.assign(nextHeaders, embeddedHeaders || {});
+    }
+  } catch {
+    // Ignore malformed playback URLs and keep existing headers.
+  }
+
+  return nextHeaders;
+}
+
 async function warmPlaybackSession(context, playbackUrl = '') {
   const targetOrigins = [
     playbackUrl,
@@ -113,15 +142,31 @@ async function enrichPlaybackResult(targetUrl, result, context) {
     return result;
   }
 
-  const cookieHeader = await warmPlaybackSession(context, result.url).catch(() => '');
+  const baseHeaders = getVidlinkPlaybackHeaders(result.url, result.headers || {});
+  const shouldWarmCookies = !baseHeaders.cookie && !parsePlaybackEmbeddedOrigins(result.url).length;
+  if (!shouldWarmCookies) {
+    return {
+      ...result,
+      headers: baseHeaders
+    };
+  }
+
+  const cookieHeader = await Promise.race([
+    warmPlaybackSession(context, result.url).catch(() => ''),
+    new Promise((resolve) => setTimeout(() => resolve(''), 1200))
+  ]);
+
   if (!cookieHeader) {
-    return result;
+    return {
+      ...result,
+      headers: baseHeaders
+    };
   }
 
   return {
     ...result,
     headers: {
-      ...(result.headers || {}),
+      ...baseHeaders,
       cookie: cookieHeader
     }
   };
