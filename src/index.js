@@ -19,8 +19,12 @@ const shouldWarmBrowserOnStartup = String(process.env.NOVA_SKIP_BROWSER_WARMUP |
 app.use(cors());
 app.use(express.json());
 app.use((req, res, next) => {
-  // Skip logging health checks and HLS segment requests
-  if (req.originalUrl === '/' || /\.ts(\?|$)/i.test(req.originalUrl)) {
+  // Skip logging root, health checks, and HLS segment requests.
+  if (
+    req.originalUrl === '/' ||
+    req.originalUrl === '/health' ||
+    /\.ts(\?|$)/i.test(req.originalUrl)
+  ) {
     return next();
   }
 
