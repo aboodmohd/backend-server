@@ -273,10 +273,10 @@ router.get('/', async (req, res) => {
   // FIX: Always include parsedHeaders (contains user-agent from client).
   // Previously parsedHeaders was dropped when useEmbeddedHeaders was true.
   const upstreamHeaders = {
+    ...requestHeaders,
     ...parsedHeaders,
     ...stormUrlHeaders,
     ...embeddedHeaders,
-    ...requestHeaders,
   };
 
   const embeddedHost = preserveEmbeddedProxyParams ? '' : parseEmbeddedHost(targetUrl);
@@ -306,6 +306,10 @@ router.get('/', async (req, res) => {
   }
   if (!upstreamHeaders['sec-fetch-dest']) {
     upstreamHeaders['sec-fetch-dest'] = isPlaylistRequest || hasEmbeddedProxyParams(targetUrl) ? 'empty' : 'video';
+  }
+
+  if (useEmbeddedHeaders) {
+    delete upstreamHeaders.cookie;
   }
 
   if (embeddedHost && !upstreamHeaders.host) {
