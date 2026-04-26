@@ -736,7 +736,10 @@ function shouldValidateCachedPlayback(result, sourceUrl = '') {
   }
 
   return (
+    String(result?.provider || '').toLowerCase() === 'vidfast' ||
     String(result?.provider || '').toLowerCase() === 'vidzee' ||
+    isVidfastUrl(result?.sourceUrl || '') ||
+    isVidfastUrl(sourceUrl) ||
     isVidzeeUrl(result?.sourceUrl || '') ||
     isVidzeeUrl(sourceUrl)
   );

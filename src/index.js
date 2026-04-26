@@ -31,7 +31,7 @@ const corsOptions = {
     callback(new Error(`Origin ${origin} is not allowed by CORS`));
   },
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Range', 'Accept', 'Accept-Language'],
 };
 
 function parseEmbeddedPlaybackHeaders(rawUrl = '') {

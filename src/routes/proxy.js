@@ -191,16 +191,28 @@ function normalizeFetchResponse(response) {
   };
 }
 
+function hasDisguisedTransportExtension(pathname = '') {
+  return /\.(?:jpe?g|png|webp|html?|js|css|txt)(?:$|\?)/i.test(pathname);
+}
+
 function isLikelyTransportSegment(targetUrl) {
   try {
     const parsed = new URL(String(targetUrl || ''));
     const pathname = decodeURIComponent(parsed.pathname).toLowerCase();
 
-    if (!pathname.includes('/file2/')) {
-      return false;
+    if (pathname.includes('/file2/') && hasDisguisedTransportExtension(pathname)) {
+      return true;
     }
 
-    return /\.(?:jpg|jpeg|png|webp|html|js|css|txt|ico)(?:$|\?)/i.test(pathname);
+    if (
+      /(^|\.)10017\.workers\.dev$/i.test(parsed.hostname) &&
+      pathname.includes('/cdn2/') &&
+      hasDisguisedTransportExtension(pathname)
+    ) {
+      return true;
+    }
+
+    return false;
   } catch {
     return false;
   }
