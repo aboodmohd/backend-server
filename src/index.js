@@ -21,6 +21,8 @@ const allowedCorsOrigins = [
   process.env.FRONTEND_ORIGIN || '',
   ...(process.env.CORS_ALLOWED_ORIGINS || '').split(',').map((entry) => entry.trim()),
 ].filter(Boolean);
+const CORS_ALLOWED_METHODS = 'GET,POST,OPTIONS';
+const CORS_ALLOWED_HEADERS = 'Content-Type,Authorization,Range,Accept,Accept-Language';
 const corsOptions = {
   origin(origin, callback) {
     if (!origin || allowedCorsOrigins.length === 0 || allowedCorsOrigins.includes(origin)) {
@@ -30,8 +32,8 @@ const corsOptions = {
 
     callback(new Error(`Origin ${origin} is not allowed by CORS`));
   },
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Range', 'Accept', 'Accept-Language'],
+  methods: CORS_ALLOWED_METHODS.split(','),
+  allowedHeaders: CORS_ALLOWED_HEADERS.split(','),
 };
 
 function parseEmbeddedPlaybackHeaders(rawUrl = '') {
@@ -48,6 +50,16 @@ function parseEmbeddedPlaybackHeaders(rawUrl = '') {
   }
 }
 
+app.use((req, res, next) => {
+  const origin = req.get('origin');
+  if (origin && (allowedCorsOrigins.length === 0 || allowedCorsOrigins.includes(origin))) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', CORS_ALLOWED_METHODS);
+    res.setHeader('Access-Control-Allow-Headers', CORS_ALLOWED_HEADERS);
+    res.vary('Origin');
+  }
+  next();
+});
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
 app.use(express.json());
@@ -122,6 +134,17 @@ app.use('/api/subtitles', subtitlesRoute);
 app.use('/resolve', resolveRoute);
 app.use('/proxy', proxyRoute);
 app.use('/', novaRoute);
+app.use((error, req, res, _next) => {
+  const statusCode = Number(error?.statusCode) || 500;
+  console.log(new Date().toISOString(), '[http] error', req.method, req.originalUrl, statusCode, error?.message || String(error));
+  if (res.headersSent) {
+    return;
+  }
+  res.status(statusCode).json({
+    success: false,
+    error: error?.message || 'Internal server error',
+  });
+});
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {

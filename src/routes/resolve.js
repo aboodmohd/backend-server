@@ -43,8 +43,9 @@ const videasyProxyUrl = process.env.VIDEASY_PROXY_URL || process.env.RESIDENTIAL
 const videasyProxyAgent = videasyProxyUrl ? new ProxyAgent(videasyProxyUrl) : null;
 const playbackProxyUrl = process.env.PLAYBACK_PROXY_URL || process.env.RESIDENTIAL_PROXY_URL || '';
 const playbackProxyAgent = playbackProxyUrl ? new ProxyAgent(playbackProxyUrl) : null;
-const RESOLVE_CONCURRENCY = Math.max(1, Number(process.env.RESOLVE_CONCURRENCY || process.env.EXTRACTION_CONCURRENCY || 2) || 2);
+const RESOLVE_CONCURRENCY = Math.max(1, Number(process.env.RESOLVE_CONCURRENCY || process.env.EXTRACTION_CONCURRENCY || 1) || 1);
 const resolveQueue = new PQueue({ concurrency: RESOLVE_CONCURRENCY });
+const VIDFAST_RESOLVE_TIMEOUT_MS = Math.max(15000, Number(process.env.VIDFAST_RESOLVE_TIMEOUT_MS || 55000) || 55000);
 
 function enqueueResolveJob(url, job) {
   const queuedAt = Date.now();
@@ -2116,7 +2117,7 @@ export async function resolveStream(url) {
       if (settled) return;
       settled = true;
       reject(new Error('STREAM_NOT_FOUND'));
-    }, isVidfastUrl(url) ? 75000 : isVidlinkUrl(url) ? 45000 : isVidkingUrl(url) ? 30000 : isVidzeeUrl(url) ? 24000 : isVideasyUrl(url) ? 18000 : RESOLVE_TIMEOUT_MS);
+    }, isVidfastUrl(url) ? VIDFAST_RESOLVE_TIMEOUT_MS : isVidlinkUrl(url) ? 45000 : isVidkingUrl(url) ? 30000 : isVidzeeUrl(url) ? 24000 : isVideasyUrl(url) ? 18000 : RESOLVE_TIMEOUT_MS);
 
     extractVideoUrls(
       resolvedSourceUrl,
@@ -2162,7 +2163,7 @@ export async function resolveStream(url) {
           .catch(() => resolve(resolved));
       },
       isVidfastUrl(url)
-        ? { settleTimeout: 3000, navigationTimeout: 45000, minWaitAfterLoad: 18000, maxWaitAfterLoad: 35000 }
+        ? { settleTimeout: 2500, navigationTimeout: 30000, minWaitAfterLoad: 12000, maxWaitAfterLoad: 24000 }
         : isVidcoreUrl(url)
         ? { settleTimeout: 2500, navigationTimeout: 30000, minWaitAfterLoad: 5000, maxWaitAfterLoad: 18000 }
         : isVidkingUrl(url)
