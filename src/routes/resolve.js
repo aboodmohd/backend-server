@@ -279,6 +279,78 @@ function buildAbsolutePlaylistUrl(playlistUrl, candidatePath) {
   return resolved.toString();
 }
 
+function normalizeProxyHostParam(value = '') {
+  const text = String(value || '').trim();
+  if (!text) {
+    return '';
+  }
+
+  try {
+    return text.includes('://') ? new URL(text).host : text.replace(/^\/+|\/+$/g, '');
+  } catch {
+    return text.replace(/^https?:\/\//i, '').replace(/^\/+|\/+$/g, '');
+  }
+}
+
+function isStormProxyPlaybackUrl(parsed) {
+  return /(^|\.)vodvidl\.site$/i.test(parsed.hostname) && parsed.pathname.startsWith('/proxy/');
+}
+
+function isVidplusPlaybackUrl(parsed) {
+  return /(^|\.)vidplus\.dev$/i.test(parsed.hostname) && /\/file2\//i.test(parsed.pathname);
+}
+
+function getPlaybackHostParam(parsed) {
+  return normalizeProxyHostParam(
+    parsed.searchParams.get(EMBEDDED_HOST_PARAM) ||
+    parsed.searchParams.get('host') ||
+    ''
+  );
+}
+
+function getVideasyPlaybackHeaders(headers = {}) {
+  return normalizeHeaders({
+    ...headers,
+    origin: 'https://player.videasy.net',
+    referer: 'https://player.videasy.net/',
+    'user-agent':
+      headers?.['user-agent'] ||
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  });
+}
+
+function canonicalizePlaybackTarget(targetUrl, headers = {}) {
+  try {
+    const parsed = new URL(String(targetUrl || ''));
+    const hostParam = getPlaybackHostParam(parsed);
+
+    if (isStormProxyPlaybackUrl(parsed) && hostParam) {
+      const decodedPath = `/${decodeURIComponent(parsed.pathname.slice('/proxy/'.length))}`;
+      const canonical = new URL(`https://fast3.vidplus.dev${decodedPath}`);
+      canonical.searchParams.set('host', hostParam);
+
+      return {
+        url: canonical.toString(),
+        headers: getVideasyPlaybackHeaders(headers)
+      };
+    }
+
+    if (isVidplusPlaybackUrl(parsed) && hostParam) {
+      return {
+        url: targetUrl,
+        headers: getVideasyPlaybackHeaders(headers)
+      };
+    }
+  } catch {
+    // Keep the original URL when it cannot be parsed.
+  }
+
+  return {
+    url: targetUrl,
+    headers
+  };
+}
+
 export function withProxiedPlaybackUrls(result, req) {
   const proxyBaseUrl = getProxyBaseUrl(req);
   const headers = result?.headers || {};
@@ -286,19 +358,24 @@ export function withProxiedPlaybackUrls(result, req) {
 
   const nextQualities = Array.isArray(result?.qualities)
     ? result.qualities.map((entry) => {
-        if (!shouldProxyPlaybackUrl(entry?.url, headers, entry?.type || result?.type, req)) {
-          return entry;
+        const playbackTarget = canonicalizePlaybackTarget(entry?.url, headers);
+        if (!shouldProxyPlaybackUrl(playbackTarget.url, playbackTarget.headers, entry?.type || result?.type, req)) {
+          return {
+            ...entry,
+            url: playbackTarget.url
+          };
         }
         return {
           ...entry,
-          url: buildProxyPlaybackUrl(proxyBaseUrl, entry.url, headers)
+          url: buildProxyPlaybackUrl(proxyBaseUrl, playbackTarget.url, playbackTarget.headers)
         };
       })
     : [];
 
-  let finalUrl = primaryUrl;
-  if (shouldProxyPlaybackUrl(primaryUrl, headers, result?.type, req)) {
-    finalUrl = buildProxyPlaybackUrl(proxyBaseUrl, primaryUrl, headers);
+  const primaryTarget = canonicalizePlaybackTarget(primaryUrl, headers);
+  let finalUrl = primaryTarget.url;
+  if (shouldProxyPlaybackUrl(primaryTarget.url, primaryTarget.headers, result?.type, req)) {
+    finalUrl = buildProxyPlaybackUrl(proxyBaseUrl, primaryTarget.url, primaryTarget.headers);
   }
 
   return {
@@ -636,6 +713,10 @@ async function fetchBinaryProbe(url, headers = {}, timeoutMs = PLAYLIST_FETCH_TI
 }
 
 async function validateHlsPlaybackTarget(playlistUrl, headers = {}) {
+  const playbackTarget = canonicalizePlaybackTarget(playlistUrl, headers);
+  playlistUrl = playbackTarget.url;
+  headers = playbackTarget.headers;
+
   const masterBody = await fetchTextBody(playlistUrl, headers);
   if (!masterBody || !/#EXTM3U/i.test(masterBody)) {
     return {
@@ -731,6 +812,20 @@ async function validateHlsPlaybackTarget(playlistUrl, headers = {}) {
   };
 }
 
+async function isUsableResolvedPlayback(result, logLabel = '[resolve]') {
+  if (String(result?.type || '').toUpperCase() !== 'HLS') {
+    return true;
+  }
+
+  const validation = await validateHlsPlaybackTarget(result.url, result.headers || {});
+  if (validation.ok) {
+    return true;
+  }
+
+  console.log(new Date().toISOString(), logLabel, 'rejected invalid hls', result.url, validation.reason);
+  return false;
+}
+
 function shouldValidateCachedPlayback(result, sourceUrl = '') {
   if (String(result?.type || '').toUpperCase() !== 'HLS') {
     return false;
@@ -738,9 +833,18 @@ function shouldValidateCachedPlayback(result, sourceUrl = '') {
 
   return (
     String(result?.provider || '').toLowerCase() === 'vidfast' ||
+    String(result?.provider || '').toLowerCase() === 'videasy' ||
+    String(result?.provider || '').toLowerCase() === 'vidlink' ||
+    String(result?.provider || '').toLowerCase() === 'vidrock' ||
     String(result?.provider || '').toLowerCase() === 'vidzee' ||
     isVidfastUrl(result?.sourceUrl || '') ||
     isVidfastUrl(sourceUrl) ||
+    isVideasyUrl(result?.sourceUrl || '') ||
+    isVideasyUrl(sourceUrl) ||
+    isVidlinkUrl(result?.sourceUrl || '') ||
+    isVidlinkUrl(sourceUrl) ||
+    isVidrockUrl(result?.sourceUrl || '') ||
+    isVidrockUrl(sourceUrl) ||
     isVidzeeUrl(result?.sourceUrl || '') ||
     isVidzeeUrl(sourceUrl)
   );
@@ -780,8 +884,21 @@ async function attachQualities(result, sourceCandidates = []) {
     return result;
   }
 
-  const sourceQualities = buildQualityEntriesFromSources(sourceCandidates);
-  const playlistQualities = (await fetchPlaylistQualities(result.url, result.headers || {})).filter((entry) => {
+  const playbackTarget = canonicalizePlaybackTarget(result.url, result.headers || {});
+  const normalizedResult = {
+    ...result,
+    url: playbackTarget.url,
+    stream: playbackTarget.url,
+    headers: playbackTarget.headers
+  };
+  const sourceQualities = buildQualityEntriesFromSources(sourceCandidates).map((entry) => ({
+    ...entry,
+    url: canonicalizePlaybackTarget(entry.url, normalizedResult.headers || {}).url
+  }));
+  const playlistQualities = (await fetchPlaylistQualities(normalizedResult.url, normalizedResult.headers || {})).map((entry) => ({
+    ...entry,
+    url: canonicalizePlaybackTarget(entry.url, normalizedResult.headers || {}).url
+  })).filter((entry) => {
     const label = String(entry?.label || entry?.quality || '').trim().toLowerCase();
     return label !== 'auto';
   });
@@ -794,9 +911,9 @@ async function attachQualities(result, sourceCandidates = []) {
   const normalizedQualities = (qualities.length ? qualities : [{
     label: 'auto',
     quality: 'auto',
-    url: result.url,
+    url: normalizedResult.url,
     codecs: '',
-    type: result.type || detectType(result.url),
+    type: normalizedResult.type || detectType(normalizedResult.url),
     isDefault: false
   }]);
   const preferredQuality = pickPreferredQualityEntry(normalizedQualities);
@@ -806,7 +923,7 @@ async function attachQualities(result, sourceCandidates = []) {
   }));
 
   return applyPreferredPrimaryPlaybackUrl({
-    ...result,
+    ...normalizedResult,
     qualities: finalQualities
   });
 }
@@ -874,7 +991,7 @@ function isVidnestUrl(url) {
 }
 
 function isVidzeeUrl(url) {
-  return /player\.vidzee\.wtf\/v2\/embed\//i.test(String(url || ''));
+  return /player\.vidzee\.wtf\/(?:v2\/)?embed\//i.test(String(url || ''));
 }
 
 function isVidrockUrl(url) {
@@ -1030,17 +1147,18 @@ function parseVidzeeEmbedUrl(url) {
   try {
     const { pathname } = new URL(url);
     const parts = pathname.split('/').filter(Boolean);
+    const offset = parts[0] === 'v2' ? 1 : 0;
 
-    if (parts[0] !== 'v2' || parts[1] !== 'embed') {
+    if (parts[offset] !== 'embed') {
       return null;
     }
 
-    if (parts[2] === 'movie' && parts[3]) {
-      return { type: 'movie', id: parts[3] };
+    if (parts[offset + 1] === 'movie' && parts[offset + 2]) {
+      return { type: 'movie', id: parts[offset + 2] };
     }
 
-    if (parts[2] === 'tv' && parts[3] && parts[4] && parts[5]) {
-      return { type: 'tv', id: parts[3], season: parts[4], episode: parts[5] };
+    if (parts[offset + 1] === 'tv' && parts[offset + 2] && parts[offset + 3] && parts[offset + 4]) {
+      return { type: 'tv', id: parts[offset + 2], season: parts[offset + 3], episode: parts[offset + 4] };
     }
   } catch {
     return null;
@@ -1527,28 +1645,39 @@ async function tryResolveVideasyDirect(sourceUrl) {
         }
 
         const payload = JSON.parse(decrypted);
-        const selectedSource = pickVideasySource(payload);
-        if (!selectedSource?.url) {
-          continue;
-        }
+        const candidateSources = Array.isArray(payload?.sources)
+          ? [...payload.sources]
+              .filter((entry) => typeof entry?.url === 'string' && entry.url.startsWith('http'))
+              .sort((left, right) => {
+                const leftScore = Number.parseInt(String(left.quality || '').replace(/\D/g, ''), 10) || 0;
+                const rightScore = Number.parseInt(String(right.quality || '').replace(/\D/g, ''), 10) || 0;
+                return rightScore - leftScore;
+              })
+          : [];
 
-        return attachQualities({
-          success: true,
-          url: selectedSource.url,
-          stream: selectedSource.url,
-          type: detectType(selectedSource.url),
-          headers: normalizeHeaders({
-            origin: 'https://player.videasy.net',
-            referer: 'https://player.videasy.net/',
-            'user-agent':
-              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
-              'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-              'Chrome/120.0.0.0 Safari/537.36'
-          }),
-          provider: 'videasy',
-          sourceUrl,
-          qualities: []
-        }, payload?.sources || []);
+        for (const selectedSource of candidateSources) {
+          const resolved = await attachQualities({
+            success: true,
+            url: selectedSource.url,
+            stream: selectedSource.url,
+            type: detectType(selectedSource.url),
+            headers: normalizeHeaders({
+              origin: 'https://player.videasy.net',
+              referer: 'https://player.videasy.net/',
+              'user-agent':
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
+                'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+                'Chrome/120.0.0.0 Safari/537.36'
+            }),
+            provider: 'videasy',
+            sourceUrl,
+            qualities: []
+          }, payload?.sources || []);
+
+          if (await isUsableResolvedPlayback(resolved, '[videasy]')) {
+            return resolved;
+          }
+        }
       } catch (error) {
         console.log(new Date().toISOString(), '[videasy] direct api failed', apiUrl, error?.message || String(error));
       }
@@ -1757,7 +1886,7 @@ async function tryResolveVidrockDirect(sourceUrl, seedDetails = null) {
     for (const source of sources) {
       try {
         if (/\.m3u8(\?|$)/i.test(source.url)) {
-          return attachQualities({
+          const resolved = await attachQualities({
             success: true,
             url: source.url,
             stream: source.url,
@@ -1767,6 +1896,12 @@ async function tryResolveVidrockDirect(sourceUrl, seedDetails = null) {
             sourceUrl: requestSourceUrl,
             qualities: []
           });
+
+          if (await isUsableResolvedPlayback(resolved, '[vidrock]')) {
+            return resolved;
+          }
+
+          continue;
         }
 
         const { signal, done } = withTimeout(DIRECT_PROVIDER_FETCH_TIMEOUT_MS * 2);
@@ -1801,7 +1936,7 @@ async function tryResolveVidrockDirect(sourceUrl, seedDetails = null) {
           }
 
           if (/mpegurl|application\/x-mpegurl|application\/vnd\.apple\.mpegurl/i.test(contentType)) {
-            return attachQualities({
+            const resolved = await attachQualities({
               success: true,
               url: source.url,
               stream: source.url,
@@ -1811,6 +1946,12 @@ async function tryResolveVidrockDirect(sourceUrl, seedDetails = null) {
               sourceUrl: requestSourceUrl,
               qualities: []
             });
+
+            if (await isUsableResolvedPlayback(resolved, '[vidrock]')) {
+              return resolved;
+            }
+
+            continue;
           }
 
           if (/video\//i.test(contentType)) {
@@ -2121,20 +2262,17 @@ export async function resolveStream(url) {
 
     extractVideoUrls(
       resolvedSourceUrl,
-      (found) => {
+      async (found) => {
         if (settled || !found?.url) {
-          return;
+          return false;
         }
 
         if (isVidrockUrl(url) && isVidrockDemoUrl(found.url)) {
           console.log(new Date().toISOString(), '[resolve] ignore vidrock demo stream', found.url);
-          return;
+          return false;
         }
 
         console.log(new Date().toISOString(), '[resolve] found', found.type, found.via, found.url);
-
-        settled = true;
-        clearTimeout(timeoutId);
         const resolved = {
           success: true,
           url: found.url,
@@ -2158,9 +2296,26 @@ export async function resolveStream(url) {
           vidfastHintCache.set(`vidfast:${url}`, found.resolverHints, SIX_HOURS_MS);
         }
 
-        attachQualities(resolved)
-          .then(resolve)
-          .catch(() => resolve(resolved));
+        try {
+          const resolvedWithQualities = await attachQualities(resolved);
+          if (!(await isUsableResolvedPlayback(resolvedWithQualities, '[resolve]'))) {
+            return false;
+          }
+
+          settled = true;
+          clearTimeout(timeoutId);
+          resolve(resolvedWithQualities);
+          return true;
+        } catch {
+          if (!(await isUsableResolvedPlayback(resolved, '[resolve]'))) {
+            return false;
+          }
+
+          settled = true;
+          clearTimeout(timeoutId);
+          resolve(resolved);
+          return true;
+        }
       },
       isVidfastUrl(url)
         ? { settleTimeout: 2500, navigationTimeout: 30000, minWaitAfterLoad: 12000, maxWaitAfterLoad: 24000 }

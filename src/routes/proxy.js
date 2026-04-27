@@ -93,6 +93,14 @@ function hasEmbeddedProxyParams(targetUrl) {
   }
 }
 
+function hasEmbeddedHeaders(targetUrl) {
+  try {
+    return !!getEmbeddedHeadersParam(new URL(targetUrl));
+  } catch {
+    return false;
+  }
+}
+
 function parseEmbeddedHost(targetUrl) {
   try {
     const parsed = new URL(targetUrl);
@@ -117,6 +125,10 @@ function shouldPreserveEmbeddedProxyParams(targetUrl) {
         return rawPath;
       }
     })();
+
+    if (/(^|\.)vidplus\.dev$/i.test(parsed.hostname) && /\/file2\//i.test(rawPath) && getEmbeddedHostParam(parsed)) {
+      return true;
+    }
 
     return /\/proxy\/file2(?:\/|%2f)/i.test(rawPath) || /\/proxy\/file2\//i.test(decodedPath);
   } catch {
@@ -159,7 +171,7 @@ function buildProxyUrl(proxyBaseUrl, targetUrl, headers = {}) {
   const proxied = new URL(proxyBaseUrl);
   proxied.searchParams.set('url', targetUrl);
 
-  if (hasEmbeddedProxyParams(targetUrl)) {
+  if (hasEmbeddedHeaders(targetUrl)) {
     return proxied.toString();
   }
 
@@ -504,7 +516,7 @@ router.get('/', async (req, res) => {
     // Previously `rewritten` was logged before it was defined (ReferenceError).
     if (isPlaylist) {
       const playlistBody = await upstream.text();
-      const segmentHeaders = useEmbeddedHeaders ? embeddedHeaders : upstreamHeaders;
+      const segmentHeaders = useEmbeddedHeaders && Object.keys(embeddedHeaders).length ? embeddedHeaders : upstreamHeaders;
       const rewritten = rewritePlaylistBody(
         playlistBody,
         targetUrl,

@@ -1375,10 +1375,14 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   const emitFound = async (result) => {
     const enrichedResult = await enrichPlaybackResult(targetUrl, result, context);
 
-    onFound({
+    const accepted = await Promise.resolve(onFound({
       ...enrichedResult,
       resolverHints: vidfastResolverHints.length ? { vidfastRequests: [...vidfastResolverHints] } : undefined
-    });
+    }));
+
+    if (accepted === false) {
+      return;
+    }
 
     if (!firstResultResolved) {
       firstResultResolved = true;
