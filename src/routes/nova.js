@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { dirname, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMemoryCache } from '../../server/cache.js';
-import { resolveStream, withProxiedPlaybackUrls } from './resolve.js';
+import { resolveStreamCached, withProxiedPlaybackUrls } from './resolve.js';
 
 const router = Router();
 const currentDir = dirname(fileURLToPath(import.meta.url));
@@ -12,6 +12,12 @@ const TMDB_API_KEY = process.env.TMDB_API_KEY || 'baa58d49a882daa37425c98142b065
 const cache = createMemoryCache(6 * 60 * 60 * 1000, {
   persistPath: resolvePath(currentDir, '../../.cache/nova-route-cache.json'),
 });
+
+// Phase 3: TMDB response caching with appropriate TTLs
+const TMDB_CACHE_TTL_TRENDING = 30 * 60 * 1000;  // 30 minutes
+const TMDB_CACHE_TTL_SEARCH = 5 * 60 * 1000;     // 5 minutes
+const TMDB_CACHE_TTL_DETAIL = 6 * 60 * 60 * 1000; // 6 hours
+const tmdbCache = createMemoryCache(TMDB_CACHE_TTL_SEARCH);
 const SERVER_OPTIONS = [
   { id: 'vidlink', label: 'VidLink', accent: '#58d2ff', description: 'Fast direct embed' },
   { id: 'videasy', label: 'Videasy', accent: '#ff7b72', description: 'Player.videasy resolver' },
@@ -163,8 +169,14 @@ function getServerList(query) {
 
 router.get('/trending/movies', async (_req, res) => {
   try {
+    const cacheKey = 'tmdb:trending:movies';
+    const cached = tmdbCache.get(cacheKey);
+    if (cached) return res.json(cached);
+
     const payload = await tmdbFetch('/trending/movie/week');
-    res.json({ results: (payload.results || []).map((item) => normalizeListing(item, 'movie')) });
+    const result = { results: (payload.results || []).map((item) => normalizeListing(item, 'movie')) };
+    tmdbCache.set(cacheKey, result, TMDB_CACHE_TTL_TRENDING);
+    res.json(result);
   } catch (error) {
     res.status(502).json({ error: error?.message || 'Trending movies failed' });
   }
@@ -172,8 +184,14 @@ router.get('/trending/movies', async (_req, res) => {
 
 router.get('/trending/tv', async (_req, res) => {
   try {
+    const cacheKey = 'tmdb:trending:tv';
+    const cached = tmdbCache.get(cacheKey);
+    if (cached) return res.json(cached);
+
     const payload = await tmdbFetch('/trending/tv/week');
-    res.json({ results: (payload.results || []).map((item) => normalizeListing(item, 'tv')) });
+    const result = { results: (payload.results || []).map((item) => normalizeListing(item, 'tv')) };
+    tmdbCache.set(cacheKey, result, TMDB_CACHE_TTL_TRENDING);
+    res.json(result);
   } catch (error) {
     res.status(502).json({ error: error?.message || 'Trending tv failed' });
   }
@@ -187,6 +205,11 @@ router.get('/search', async (req, res) => {
       return res.json({ results: [], query, type });
     }
     const searchType = ['movie', 'tv', 'multi'].includes(type) ? type : 'multi';
+
+    const cacheKey = `tmdb:search:${searchType}:${query.toLowerCase()}`;
+    const cached = tmdbCache.get(cacheKey);
+    if (cached) return res.json(cached);
+
     const payload = await tmdbFetch(`/search/${searchType}`, {
       query,
       include_adult: 'false',
@@ -194,7 +217,9 @@ router.get('/search', async (req, res) => {
     const results = (payload.results || [])
       .filter((item) => ['movie', 'tv'].includes(item.media_type || searchType))
       .map((item) => normalizeListing(item, item.media_type || searchType));
-    return res.json({ results, query, type: searchType });
+    const result = { results, query, type: searchType };
+    tmdbCache.set(cacheKey, result, TMDB_CACHE_TTL_SEARCH);
+    return res.json(result);
   } catch (error) {
     return res.status(502).json({ error: error?.message || 'Search failed' });
   }
@@ -207,8 +232,15 @@ router.get('/detail', async (req, res) => {
     if (!tmdbId) {
       return res.status(400).json({ error: 'id is required' });
     }
+
+    const cacheKey = `tmdb:detail:${mediaType}:${tmdbId}`;
+    const cached = tmdbCache.get(cacheKey);
+    if (cached) return res.json(cached);
+
     const payload = await tmdbFetch(`/${mediaType}/${tmdbId}`);
-    return res.json(normalizeDetail(payload, mediaType));
+    const result = normalizeDetail(payload, mediaType);
+    tmdbCache.set(cacheKey, result, TMDB_CACHE_TTL_DETAIL);
+    return res.json(result);
   } catch (error) {
     return res.status(502).json({ error: error?.message || 'Detail failed' });
   }
@@ -243,7 +275,7 @@ router.post('/nova/resolve-server', async (req, res) => {
         ...withProxiedPlaybackUrls(cached, req),
       });
     }
-    const resolved = await resolveStream(sourceUrl);
+    const resolved = await resolveStreamCached(sourceUrl, { refresh: shouldRefresh });
     const normalized = { ...resolved, sourceUrl };
     cache.set(cacheKey, normalized);
     return res.json({
@@ -258,6 +290,36 @@ router.post('/nova/resolve-server', async (req, res) => {
       error: message,
       success: false,
     });
+  }
+});
+
+// Phase 6: Prefetch endpoint — starts resolution in background so streams
+// are cached and ready before the user clicks Play.
+router.post('/nova/prefetch', async (req, res) => {
+  try {
+    const server = String(req.body?.server || req.query.server || '').trim().toLowerCase();
+    const query = parseMediaQuery(req.body || req.query || {});
+    const sourceUrl = buildServerUrl(server, query);
+    const cacheKey = `nova:${server}:${sourceUrl}`;
+
+    // Already cached? No work needed.
+    if (cache.get(cacheKey)) {
+      return res.json({ status: 'cached', server, sourceUrl });
+    }
+
+    // Fire-and-forget: resolve in background, cache the result
+    resolveStreamCached(sourceUrl)
+      .then((resolved) => {
+        cache.set(cacheKey, { ...resolved, sourceUrl });
+        console.log(new Date().toISOString(), '[prefetch] resolved', server, sourceUrl);
+      })
+      .catch((error) => {
+        console.log(new Date().toISOString(), '[prefetch] failed', server, error?.message || String(error));
+      });
+
+    return res.json({ status: 'prefetching', server, sourceUrl });
+  } catch (error) {
+    return res.status(400).json({ error: error?.message || 'Prefetch failed' });
   }
 });
 

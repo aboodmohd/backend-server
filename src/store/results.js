@@ -121,6 +121,14 @@ export function createCacheStore(options = {}) {
       }
       return entry.value;
     },
+    getEntry(key) {
+      const entry = cache.get(key);
+      if (!entry || entry.expiresAt < Date.now()) {
+        cache.delete(key);
+        return null;
+      }
+      return entry;
+    },
     set(key, value, ttlMs = defaultTtlMs) {
       const expiresAt = Number.isFinite(ttlMs) ? Date.now() + Number(ttlMs) : Number.MAX_SAFE_INTEGER;
 

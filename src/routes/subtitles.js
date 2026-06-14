@@ -5,6 +5,10 @@ const WYZIE_SEARCH_URL = 'https://sub.wyzie.io/search';
 const REQUEST_TIMEOUT_MS = 15000;
 const DEFAULT_LANGUAGES = ['en', 'ar'];
 
+// Phase 8: Cache subtitle search results for 24 hours
+const SUBTITLE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const subtitleCache = new Map();
+
 function getBaseUrl(req) {
   const protocol = req.get('x-forwarded-proto') || req.protocol || 'https';
   return `${protocol}://${req.get('host')}`;
@@ -82,7 +86,7 @@ function normalizeSubtitleItem(item, language, index) {
     languageLabel: normalizeLanguageLabel(normalizedLanguage),
     url,
     provider: 'Wyzie',
-    format: formatSource.includes('.vtt') || formatSource.includes('webvtt') ? 'vtt' : 'srt'
+    format: formatSource.includes('.srt') ? 'srt' : 'vtt'
   };
 }
 
@@ -97,6 +101,23 @@ function dedupeSubtitles(subtitles = []) {
     seen.add(key);
     return true;
   });
+}
+
+function convertSrtToVtt(text = '') {
+  const body = String(text || '').replace(/^\uFEFF/, '').replace(/\r/g, '');
+  if (/^WEBVTT\b/i.test(body.trimStart())) {
+    return body;
+  }
+
+  const cues = body
+    .split('\n')
+    .map((line) => line.replace(
+      /(\d{1,2}:\d{2}:\d{2}),(\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}),(\d{3})/g,
+      '$1.$2 --> $3.$4'
+    ))
+    .join('\n');
+
+  return `WEBVTT\n\n${cues}`;
 }
 
 router.get('/file', async (req, res) => {
@@ -120,10 +141,10 @@ router.get('/file', async (req, res) => {
       return res.status(response.status).send(await response.text());
     }
 
-    const contentType = response.headers.get('content-type') || 'text/plain; charset=utf-8';
+    const body = await response.text();
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Content-Type', contentType);
-    return res.send(await response.text());
+    res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    return res.send(convertSrtToVtt(body));
   } catch (error) {
     return res.status(502).json({ success: false, error: error?.message || 'subtitle proxy failed' });
   } finally {
@@ -132,6 +153,11 @@ router.get('/file', async (req, res) => {
 });
 
 router.get('/', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('ETag', `"subtitles-${Date.now()}-${Math.random().toString(16).slice(2)}"`);
+
   const apiKey = String(process.env.WYZIE_API_KEY || '').trim();
   if (!apiKey) {
     return res.status(503).json({ success: false, error: 'WYZIE_API_KEY not configured', subtitles: [] });
@@ -146,12 +172,20 @@ router.get('/', async (req, res) => {
   const episode = String(req.query.episode || '').trim();
   const languages = normalizeLanguages(req.query.languages || req.query.language);
 
+  // Phase 8: Check subtitle cache
+  const subtitleCacheKey = `sub:${id}:${season}:${episode}:${languages.join(',')}`;
+  const cachedEntry = subtitleCache.get(subtitleCacheKey);
+  if (cachedEntry && cachedEntry.expiresAt > Date.now()) {
+    return res.json(cachedEntry.data);
+  }
+
   const results = await Promise.allSettled(
     languages.map(async (language) => {
       const params = new URLSearchParams({
         id,
         language,
         format: 'srt',
+        source: 'all',
         key: apiKey
       });
 
@@ -197,11 +231,21 @@ router.get('/', async (req, res) => {
     };
   });
 
-  return res.json({
+  const responseData = {
     success: true,
     subtitles: proxiedSubtitles,
     languages
-  });
+  };
+
+  // Store in subtitle cache
+  subtitleCache.set(subtitleCacheKey, { data: responseData, expiresAt: Date.now() + SUBTITLE_CACHE_TTL_MS });
+  // Evict old entries (simple cap)
+  if (subtitleCache.size > 500) {
+    const firstKey = subtitleCache.keys().next().value;
+    subtitleCache.delete(firstKey);
+  }
+
+  return res.json(responseData);
 });
 
 export default router;

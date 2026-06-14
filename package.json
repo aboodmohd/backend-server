@@ -10,9 +10,11 @@
     "postinstall": "PLAYWRIGHT_BROWSERS_PATH=0 playwright install chromium"
   },
   "dependencies": {
+    "compression": "^1.8.1",
     "cors": "^2.8.5",
     "crypto-js": "^4.2.0",
     "express": "^5.1.0",
+    "got-scraping": "^4.0.8",
     "p-queue": "^8.1.0",
     "playwright": "^1.55.1",
     "playwright-extra": "^4.3.6",

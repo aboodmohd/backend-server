@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import extractRoute from './routes/extract.js';
@@ -8,7 +9,9 @@ import downloadRoute from './routes/download.js';
 import resolveRoute from './routes/resolve.js';
 import proxyRoute from './routes/proxy.js';
 import subtitlesRoute from './routes/subtitles.js';
+import introRoute from './routes/intro.js';
 import novaRoute from './routes/nova.js';
+import animeRoute from './routes/anime.js';
 import { warmBrowser } from './workers/playwright.js';
 import videasyRoute from '../server/server.js';
 
@@ -22,10 +25,23 @@ const allowedCorsOrigins = [
   ...(process.env.CORS_ALLOWED_ORIGINS || '').split(',').map((entry) => entry.trim()),
 ].filter(Boolean);
 const CORS_ALLOWED_METHODS = 'GET,POST,OPTIONS';
-const CORS_ALLOWED_HEADERS = 'Content-Type,Authorization,Range,Accept,Accept-Language';
+const CORS_ALLOWED_HEADERS = 'Content-Type,Authorization,Range,Accept,Accept-Language,Cache-Control,Pragma';
+
+function isLocalDevOrigin(origin = '') {
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin) ||
+    /^https?:\/\/\[::1\](:\d+)?$/i.test(origin);
+}
+
+function isCorsOriginAllowed(origin) {
+  return !origin ||
+    allowedCorsOrigins.length === 0 ||
+    allowedCorsOrigins.includes(origin) ||
+    isLocalDevOrigin(origin);
+}
+
 const corsOptions = {
   origin(origin, callback) {
-    if (!origin || allowedCorsOrigins.length === 0 || allowedCorsOrigins.includes(origin)) {
+    if (isCorsOriginAllowed(origin)) {
       callback(null, true);
       return;
     }
@@ -50,9 +66,19 @@ function parseEmbeddedPlaybackHeaders(rawUrl = '') {
   }
 }
 
+// Phase 4: Response compression — gzip/brotli for JSON and text responses
+app.use(compression({
+  threshold: 512,
+  filter: (req, res) => {
+    // Skip compression for proxy/stream routes (already binary or handled separately)
+    if (req.originalUrl.startsWith('/proxy')) return false;
+    if (req.originalUrl.startsWith('/api/stream')) return false;
+    return compression.filter(req, res);
+  }
+}));
 app.use((req, res, next) => {
   const origin = req.get('origin');
-  if (origin && (allowedCorsOrigins.length === 0 || allowedCorsOrigins.includes(origin))) {
+  if (origin && isCorsOriginAllowed(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', CORS_ALLOWED_METHODS);
     res.setHeader('Access-Control-Allow-Headers', CORS_ALLOWED_HEADERS);
@@ -131,6 +157,8 @@ app.use('/api/videasy', videasyRoute);
 app.use('/api/stream', streamRoute);
 app.use('/api/download', downloadRoute);
 app.use('/api/subtitles', subtitlesRoute);
+app.use('/api/intro', introRoute);
+app.use('/api/anime', animeRoute);
 app.use('/resolve', resolveRoute);
 app.use('/proxy', proxyRoute);
 app.use('/', novaRoute);

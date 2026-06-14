@@ -1,6 +1,6 @@
-import http from 'node:http';
-import https from 'node:https';
 import tls from 'node:tls';
+import { gotScraping } from 'got-scraping';
+import { getDefaultUserAgent, getRealisticClientHints } from '../workers/playwright.js';
 
 const DEFAULT_TIMEOUT_MS = Number(process.env.VIDEASY_PROXY_TIMEOUT_MS || 8000);
 
@@ -116,104 +116,70 @@ function openProxyTunnel(targetUrl, proxyUrl, headers, timeoutMs = DEFAULT_TIMEO
   }), timeoutMs + 250, 'Proxy tunnel');
 }
 
-async function proxyHttpsRequest(targetUrl, proxyUrl, options = {}) {
-  const target = new URL(targetUrl);
-  const headers = normalizeHeaders(options.headers);
-  const timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS);
-  const socket = await openProxyTunnel(targetUrl, proxyUrl, headers, timeoutMs);
-
-  return withTimeout(() => new Promise((resolve, reject) => {
-    const request = https.request({
-      host: target.hostname,
-      port: target.port || 443,
-      path: `${target.pathname}${target.search}`,
-      method: options.method || 'GET',
-      headers,
-      socket,
-      agent: false
-    }, async (response) => {
-      try {
-        const body = await readResponseBody(response);
-        resolve({
-          status: response.statusCode || 500,
-          headers: normalizeHeaders(response.headers),
-          body
-        });
-      } catch (error) {
-        reject(error);
-      }
-    });
-
-    request.once('error', reject);
-    request.setTimeout(timeoutMs, () => {
-      request.destroy(createTimeoutError('Proxy HTTPS request', timeoutMs));
-    });
-
-    if (options.body) {
-      request.write(options.body);
-    }
-
-    request.end();
-  }), timeoutMs + 250, 'Proxy HTTPS request');
-}
-
-async function directRequest(targetUrl, options = {}) {
-  const timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(createTimeoutError('Direct fetch', timeoutMs)), timeoutMs);
-
-  try {
-    const response = await fetch(targetUrl, {
-      method: options.method || 'GET',
-      headers: options.headers,
-      body: options.body,
-      signal: controller.signal
-    });
-
-    return {
-      status: response.status,
-      headers: normalizeHeaders(Object.fromEntries(response.headers.entries())),
-      body: await response.text()
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 export async function fetchVideasyThroughProxy(targetUrl, options = {}) {
   const proxyUrls = getVideasyProxyUrls();
   const timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS);
+  const headers = {
+    ...getRealisticClientHints(),
+    'user-agent': getDefaultUserAgent(),
+    ...normalizeHeaders(options.headers)
+  };
+
+  const fetchOptions = {
+    url: targetUrl,
+    method: options.method || 'GET',
+    headers,
+    timeout: { request: timeoutMs },
+    retry: { limit: 0 },
+    throwHttpErrors: false,
+    followRedirect: true,
+    responseType: 'text',
+    http2: true
+  };
+
+  if (options.body) {
+    fetchOptions.body = options.body;
+  }
 
   if (!proxyUrls.length) {
-    const directResult = await directRequest(targetUrl, { ...options, timeoutMs });
+    const response = await gotScraping(fetchOptions);
     return {
-      ...directResult,
+      status: response.statusCode,
+      headers: normalizeHeaders(response.headers),
+      body: response.body,
       proxyUrl: null
     };
   }
 
   let lastError;
-
   for (const proxyUrl of proxyUrls) {
     try {
-      const result = await proxyHttpsRequest(targetUrl, proxyUrl, { ...options, timeoutMs });
-      if (result.status !== 403) {
+      const response = await gotScraping({
+        ...fetchOptions,
+        proxyUrl
+      });
+
+      if (response.statusCode !== 403) {
         return {
-          ...result,
+          status: response.statusCode,
+          headers: normalizeHeaders(response.headers),
+          body: response.body,
           proxyUrl
         };
       }
-
       lastError = new Error(`Proxy returned 403 via ${proxyUrl}`);
     } catch (error) {
       lastError = error;
     }
   }
 
+  // Fallback to direct request if all proxies fail
   try {
-    const directResult = await directRequest(targetUrl, { ...options, timeoutMs: Math.max(5000, Math.min(timeoutMs, 10000)) });
+    const response = await gotScraping(fetchOptions);
     return {
-      ...directResult,
+      status: response.statusCode,
+      headers: normalizeHeaders(response.headers),
+      body: response.body,
       proxyUrl: null,
       fallbackFromProxyError: lastError ? lastError.message || String(lastError) : null
     };
@@ -221,7 +187,6 @@ export async function fetchVideasyThroughProxy(targetUrl, options = {}) {
     if (lastError) {
       directError.cause = lastError;
     }
-
     throw directError;
   }
 }

@@ -30,9 +30,22 @@ const STREAM_URL_PATTERNS = [
   /video\.m3u8/i
 ];
 
+const VIDFUN_SERVER_LABELS = [
+  'Palermo',
+  'Berlin',
+  'Denver',
+  'Bogota',
+  'Oslo',
+  'Luna',
+  'LordFlix',
+  'Sakura',
+  'Rio'
+];
+const VIDFUN_DEFAULT_SERVER = 'Berlin';
+
 const NON_STREAM_ASSET_PATTERNS = [
   /(?:^|\/)_(?:build|ssg|middleware)manifest\.js(?:\?|$)/i,
-  /\.(?:js|mjs|cjs|css|map|json|txt|svg|png|jpe?g|gif|webp|ico|woff2?|ttf)(?:\?|$)/i,
+  /\.(?:js|mjs|cjs|css|map|json|txt|svg|png|jpe?g|gif|webp|ico|wasm|woff2?|ttf)(?:\?|$)/i,
   /\/favicon\.ico(?:\?|$)/i
 ];
 
@@ -75,10 +88,44 @@ function parsePlaybackEmbeddedOrigins(targetUrl = '') {
 }
 
 function buildCookieHeader(cookies = []) {
+  const now = Date.now();
   return cookies
-    .filter((cookie) => cookie?.name && cookie?.value)
+    .filter((cookie) => (
+      cookie?.name &&
+      cookie?.value &&
+      (cookie.expires == null || cookie.expires < 0 || cookie.expires * 1000 > now)
+    ))
     .map((cookie) => `${cookie.name}=${cookie.value}`)
     .join('; ');
+}
+
+function getUrlOrigin(value = '') {
+  try {
+    return new URL(String(value || '')).origin;
+  } catch {
+    return '';
+  }
+}
+
+function getPlaybackCookieOrigins(targetUrl = '', playbackUrl = '') {
+  const playbackOrigins = [
+    getUrlOrigin(playbackUrl),
+    getUrlOrigin(parsePlaybackEmbeddedHost(playbackUrl)),
+    ...parsePlaybackEmbeddedOrigins(playbackUrl)
+  ].filter(Boolean);
+
+  const origins = playbackOrigins.length ? playbackOrigins : [getUrlOrigin(targetUrl)].filter(Boolean);
+  return origins.filter((origin, index, entries) => entries.indexOf(origin) === index);
+}
+
+async function readPlaybackCookieHeader(context, targetUrl = '', playbackUrl = '') {
+  const origins = getPlaybackCookieOrigins(targetUrl, playbackUrl);
+  if (!origins.length) {
+    return '';
+  }
+
+  const cookies = await context.cookies(origins).catch(() => []);
+  return buildCookieHeader(cookies);
 }
 
 function getVidlinkPlaybackHeaders(playbackUrl = '', headers = {}) {
@@ -88,6 +135,7 @@ function getVidlinkPlaybackHeaders(playbackUrl = '', headers = {}) {
     'sec-fetch-site': 'cross-site',
     'sec-fetch-mode': 'cors',
     'sec-fetch-dest': 'empty',
+    ...getRealisticClientHints(),
     ...(headers || {})
   };
 
@@ -138,23 +186,29 @@ async function warmPlaybackSession(context, playbackUrl = '') {
 }
 
 async function enrichPlaybackResult(targetUrl, result, context) {
-  if (!isVidlinkUrl(targetUrl) || !result?.url) {
+  if (!result?.url) {
     return result;
   }
 
-  const baseHeaders = getVidlinkPlaybackHeaders(result.url, result.headers || {});
-  const shouldWarmCookies = !baseHeaders.cookie && !parsePlaybackEmbeddedOrigins(result.url).length;
-  if (!shouldWarmCookies) {
+  const isVidlinkTarget = isVidlinkUrl(targetUrl);
+  const baseHeaders = isVidlinkTarget
+    ? getVidlinkPlaybackHeaders(result.url, result.headers || {})
+    : { ...(result.headers || {}) };
+
+  if (baseHeaders.cookie) {
     return {
       ...result,
       headers: baseHeaders
     };
   }
 
-  const cookieHeader = await Promise.race([
-    warmPlaybackSession(context, result.url).catch(() => ''),
-    new Promise((resolve) => setTimeout(() => resolve(''), 1200))
-  ]);
+  let cookieHeader = await readPlaybackCookieHeader(context, targetUrl, result.url);
+  if (!cookieHeader && isVidlinkTarget) {
+    cookieHeader = await Promise.race([
+      warmPlaybackSession(context, result.url).catch(() => ''),
+      new Promise((resolve) => setTimeout(() => resolve(''), 1200))
+    ]);
+  }
 
   if (!cookieHeader) {
     return {
@@ -167,7 +221,10 @@ async function enrichPlaybackResult(targetUrl, result, context) {
     ...result,
     headers: {
       ...baseHeaders,
-      cookie: cookieHeader
+      cookie: cookieHeader,
+      'x-playback-cookie-source': 'playwright',
+      'user-agent': getDefaultUserAgent(),
+      ...getRealisticClientHints()
     }
   };
 }
@@ -389,8 +446,6 @@ function shouldTrackActivity(url, resourceType) {
     'google-analytics.com',
     'googletagmanager.com',
     'doubleclick.net',
-    'umami.',
-    '/cdn-cgi/rum',
     'mc.yandex.ru',
     'f.clarity.ms'
   ].some((pattern) => url.includes(pattern));
@@ -420,6 +475,468 @@ function isVidcoreUrl(url) {
   }
 }
 
+function isMegaplayUrl(url) {
+  try {
+    return /(^|\.)megaplay\.buzz$/i.test(new URL(String(url || '')).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isMegaplaySourcesApiUrl(url) {
+  try {
+    const parsed = new URL(String(url || ''));
+    return /(^|\.)megaplay\.buzz$/i.test(parsed.hostname) && parsed.pathname === '/stream/getSources';
+  } catch {
+    return false;
+  }
+}
+
+function isMegaplayStreamHostUrl(url) {
+  try {
+    const parsed = new URL(String(url || ''));
+    return /streamzone\d*\.site/i.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isVidfunUrl(url) {
+  try {
+    const parsed = new URL(String(url || ''));
+    return /(^|\.)vidfun\.pro$/i.test(parsed.hostname) && /\/(?:movie|tv)\//i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function normalizeVidfunServerName(value = '') {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  if (!normalized) {
+    return '';
+  }
+
+  return VIDFUN_SERVER_LABELS.find((label) => label.toLowerCase().replace(/[\s_-]+/g, '') === normalized) || '';
+}
+
+function getRequestedVidfunServer(targetUrl = '') {
+  try {
+    const parsed = new URL(String(targetUrl || ''));
+    return normalizeVidfunServerName(parsed.searchParams.get('novaServer') || parsed.searchParams.get('server') || '') || VIDFUN_DEFAULT_SERVER;
+  } catch {
+    return VIDFUN_DEFAULT_SERVER;
+  }
+}
+
+function isVidfunHlsResult(result = {}) {
+  return (
+    String(result?.type || '').toUpperCase() === 'HLS' ||
+    /mpegurl/i.test(String(result?.contentType || '')) ||
+    /workers\.dev\/content\?/i.test(String(result?.url || ''))
+  );
+}
+
+function normalizeVidfunQualityLabel(value = '') {
+  const text = String(value || '').trim();
+  if (/^4k$/i.test(text)) return '2160p';
+  if (/^2k$/i.test(text)) return '1440p';
+
+  const height = text.match(/(\d{3,4})/);
+  if (height?.[1]) {
+    return `${height[1]}p`;
+  }
+
+  return text;
+}
+
+function getVidfunQualityRank(label = '') {
+  if (/^4k$/i.test(label)) return 2160;
+  if (/^2k$/i.test(label)) return 1440;
+  return Number.parseInt(String(label || '').replace(/\D/g, ''), 10) || 0;
+}
+
+function sortVidfunQualityLabels(labels = []) {
+  return [...labels].sort((left, right) => getVidfunQualityRank(right) - getVidfunQualityRank(left));
+}
+
+function normalizeVideasyQualityLabel(value = '') {
+  return normalizeVidfunQualityLabel(value);
+}
+
+function sortVideasyQualityLabels(labels = []) {
+  return sortVidfunQualityLabels(labels);
+}
+
+function isVideasyHlsResult(result = {}) {
+  return (
+    String(result?.type || '').toUpperCase() === 'HLS' ||
+    /mpegurl/i.test(String(result?.contentType || '')) ||
+    /\.m3u8(?:$|[?#])/i.test(String(result?.url || ''))
+  );
+}
+
+function buildVidfunQualityEntries(labels = [], candidates = []) {
+  const primaryCandidate = candidates.find((entry) => isVidfunHlsResult(entry));
+  if (!primaryCandidate) {
+    return [];
+  }
+
+  const explicitLabels = sortVidfunQualityLabels(labels)
+    .map(normalizeVidfunQualityLabel)
+    .filter((label) => label && !/^auto$/i.test(label));
+  const seen = new Set();
+
+  return explicitLabels
+    .map((label) => {
+      const match = candidates.find((entry) => normalizeVidfunQualityLabel(entry?.qualityLabel || '') === label) ||
+        (label === explicitLabels[0] ? primaryCandidate : null);
+
+      if (!match?.url) {
+        return null;
+      }
+
+      const key = `${label}:${match.url}`;
+      if (seen.has(key)) {
+        return null;
+      }
+      seen.add(key);
+
+      return {
+        label,
+        quality: label,
+        url: match.url,
+        type: 'HLS',
+        headers: match.headers || {},
+        isDefault: false
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildVideasyQualityEntries(labels = [], candidates = []) {
+  const primaryCandidate = candidates.find((entry) => isVideasyHlsResult(entry));
+  if (!primaryCandidate) {
+    return [];
+  }
+
+  const explicitLabels = sortVideasyQualityLabels(labels)
+    .map(normalizeVideasyQualityLabel)
+    .filter((label) => label && !/^auto$/i.test(label));
+  const seen = new Set();
+
+  return explicitLabels
+    .map((label) => {
+      const match = candidates.find((entry) => normalizeVideasyQualityLabel(entry?.qualityLabel || '') === label);
+
+      if (!match?.url) {
+        return null;
+      }
+
+      const key = `${label}:${match.url}`;
+      if (seen.has(key)) {
+        return null;
+      }
+      seen.add(key);
+
+      return {
+        label,
+        quality: label,
+        url: match.url,
+        type: 'HLS',
+        headers: match.headers || {},
+        isDefault: false
+      };
+    })
+    .filter(Boolean);
+}
+
+async function waitForVidfunHlsCandidate(page, candidates, timeoutMs = 10000, afterIndex = 0) {
+  const startedAt = Date.now();
+
+  while (!page.isClosed() && Date.now() - startedAt < timeoutMs) {
+    const candidate = candidates.slice(afterIndex).find((entry) => isVidfunHlsResult(entry));
+    if (candidate) {
+      return candidate;
+    }
+
+    await page.waitForTimeout(250).catch(() => undefined);
+  }
+
+  return null;
+}
+
+async function waitForVideasyHlsCandidate(page, candidates, timeoutMs = 10000, afterIndex = 0) {
+  const startedAt = Date.now();
+
+  while (!page.isClosed() && Date.now() - startedAt < timeoutMs) {
+    const candidate = candidates.slice(afterIndex).find((entry) => isVideasyHlsResult(entry));
+    if (candidate) {
+      return candidate;
+    }
+
+    await page.waitForTimeout(250).catch(() => undefined);
+  }
+
+  return null;
+}
+
+async function openVidfunQualityMenu(page) {
+  const existingLabels = await getVidfunQualityLabels(page);
+  if (existingLabels.length) {
+    return;
+  }
+
+  const settingsButton = page.locator('button[aria-label="Settings"]').first();
+  await settingsButton.waitFor({ state: 'attached', timeout: 12000 }).catch(() => undefined);
+  await settingsButton.click({ timeout: 2000, force: true }).catch(() => undefined);
+  await page.waitForTimeout(500).catch(() => undefined);
+
+  await page.evaluate(() => {
+    const normalize = (value) => String(value || '').trim().toLowerCase();
+    const qualityButton = [...document.querySelectorAll('button')]
+      .find((button) => normalize(button.innerText || button.textContent) === 'quality');
+    qualityButton?.click();
+  }).catch(() => undefined);
+
+  await page.waitForTimeout(500).catch(() => undefined);
+}
+
+async function openVideasyQualityMenu(page) {
+  const existingLabels = await getVideasyQualityLabels(page);
+  if (existingLabels.length) {
+    return;
+  }
+
+  await page.evaluate(() => {
+    const normalize = (value) => String(value || '').trim().toLowerCase();
+    const visible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    };
+
+    const controls = [...document.querySelectorAll('button,[role="button"],[aria-label]')];
+    const settings = controls.find((entry) => {
+      const text = normalize(entry.innerText || entry.textContent || entry.getAttribute('aria-label'));
+      return visible(entry) && /settings|quality|gear|cog/.test(text);
+    }) || controls.reverse().find((entry) => visible(entry));
+
+    settings?.click();
+  }).catch(() => undefined);
+
+  await page.waitForTimeout(500).catch(() => undefined);
+
+  await page.evaluate(() => {
+    const normalize = (value) => String(value || '').trim().toLowerCase();
+    const targets = [...document.querySelectorAll('button,[role="menuitem"],[role="button"],div,span')]
+      .filter((entry) => normalize(entry.innerText || entry.textContent) === 'quality');
+
+    const target = targets.find((entry) => {
+      const rect = entry.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    });
+
+    target?.click();
+  }).catch(() => undefined);
+
+  await page.waitForTimeout(500).catch(() => undefined);
+}
+
+async function getVidfunQualityLabels(page) {
+  return await page.evaluate(() => {
+    const labels = [...document.querySelectorAll('button')]
+      .map((button) => String(button.innerText || button.textContent || '').trim().replace(/\s+/g, ' '))
+      .filter((label) => /^(?:auto|4k|2k|\d{3,4}p)$/i.test(label));
+
+    return [...new Set(labels)];
+  }).catch(() => []);
+}
+
+async function getVideasyQualityLabels(page) {
+  return await page.evaluate(() => {
+    const labels = [...document.querySelectorAll('button,[role="menuitem"],[role="option"],[role="button"],li,div,span')]
+      .map((entry) => String(entry.innerText || entry.textContent || '').trim().replace(/\s+/g, ' '))
+      .filter((label) => /^(?:auto|4k|2k|\d{3,4}p?)$/i.test(label))
+      .map((label) => {
+        const match = label.match(/^\d{3,4}$/);
+        return match ? `${label}p` : label;
+      });
+
+    return [...new Set(labels)];
+  }).catch(() => []);
+}
+
+async function waitForVidfunQualityLabels(page, timeoutMs = 10000) {
+  const startedAt = Date.now();
+  let labels = [];
+
+  while (!page.isClosed() && Date.now() - startedAt < timeoutMs) {
+    labels = await getVidfunQualityLabels(page);
+    if (labels.some((label) => !/^auto$/i.test(label))) {
+      return labels;
+    }
+
+    await openVidfunQualityMenu(page);
+    await page.waitForTimeout(600).catch(() => undefined);
+  }
+
+  return labels;
+}
+
+async function waitForVideasyQualityLabels(page, timeoutMs = 10000) {
+  const startedAt = Date.now();
+  let labels = [];
+
+  while (!page.isClosed() && Date.now() - startedAt < timeoutMs) {
+    labels = await getVideasyQualityLabels(page);
+    if (labels.some((label) => !/^auto$/i.test(label))) {
+      return labels;
+    }
+
+    await openVideasyQualityMenu(page);
+    await page.waitForTimeout(600).catch(() => undefined);
+  }
+
+  return labels;
+}
+
+async function clickVidfunQuality(page, label) {
+  return await page.evaluate((targetLabel) => {
+    const normalize = (value) => String(value || '').trim().toLowerCase();
+    const button = [...document.querySelectorAll('button')]
+      .find((entry) => normalize(entry.innerText || entry.textContent) === normalize(targetLabel));
+
+    if (!button) {
+      return false;
+    }
+
+    button.click();
+    return true;
+  }, label).catch(() => false);
+}
+
+async function clickVideasyQuality(page, label) {
+  return await page.evaluate((targetLabel) => {
+    const normalize = (value) => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const target = normalize(targetLabel).replace(/p$/i, '');
+    const matches = (value) => {
+      const normalized = normalize(value);
+      return normalized === normalize(targetLabel) || normalized.replace(/p$/i, '') === target;
+    };
+
+    const button = [...document.querySelectorAll('button,[role="menuitem"],[role="option"],[role="button"],li,div,span')]
+      .find((entry) => matches(entry.innerText || entry.textContent));
+
+    if (!button) {
+      return false;
+    }
+
+    button.click();
+    return true;
+  }, label).catch(() => false);
+}
+
+async function collectVidfunQualityEntries(page, targetUrl, candidates, candidateStartIndex = 0) {
+  if (!isVidfunUrl(targetUrl)) {
+    return [];
+  }
+
+  await waitForVidfunHlsCandidate(page, candidates, 12000, candidateStartIndex);
+  await openVidfunQualityMenu(page);
+
+  const labels = await waitForVidfunQualityLabels(page);
+  const explicitLabels = sortVidfunQualityLabels(labels).filter((label) => !/^auto$/i.test(label));
+  if (labels.length) {
+    console.log(new Date().toISOString(), '[vidfun] quality labels', labels.join(', '));
+  }
+
+  for (const label of explicitLabels) {
+    const normalizedLabel = normalizeVidfunQualityLabel(label);
+    if (candidates.slice(candidateStartIndex).some((entry) => normalizeVidfunQualityLabel(entry?.qualityLabel || '') === normalizedLabel)) {
+      continue;
+    }
+
+    const beforeCount = candidates.length;
+    const clicked = await clickVidfunQuality(page, label);
+    if (!clicked) {
+      continue;
+    }
+
+    const nextCandidate = await waitForVidfunHlsCandidate(page, candidates, 4500, beforeCount);
+    if (nextCandidate) {
+      nextCandidate.qualityLabel = normalizedLabel;
+    } else if (label === explicitLabels[0]) {
+      const primaryCandidate = candidates.slice(candidateStartIndex).find((entry) => isVidfunHlsResult(entry));
+      if (primaryCandidate) {
+        primaryCandidate.qualityLabel = normalizedLabel;
+      }
+    }
+  }
+
+  const scopedCandidates = candidates.slice(candidateStartIndex);
+  return buildVidfunQualityEntries(labels, scopedCandidates.length ? scopedCandidates : candidates);
+}
+
+async function collectVideasyQualityEntries(page, targetUrl, candidates, candidateStartIndex = 0) {
+  if (!isVideasyUrl(targetUrl)) {
+    return [];
+  }
+
+  await waitForVideasyHlsCandidate(page, candidates, 12000, candidateStartIndex);
+  await openVideasyQualityMenu(page);
+
+  const labels = await waitForVideasyQualityLabels(page);
+  const explicitLabels = sortVideasyQualityLabels(labels).filter((label) => !/^auto$/i.test(label));
+  if (labels.length) {
+    console.log(new Date().toISOString(), '[videasy] quality labels', labels.join(', '));
+  }
+
+  const currentLabel = labels.find((label) => !/^auto$/i.test(label));
+  const normalizedCurrentLabel = normalizeVideasyQualityLabel(currentLabel || '');
+  const primaryCandidate = candidates.slice(candidateStartIndex).find((entry) => isVideasyHlsResult(entry));
+  if (primaryCandidate && normalizedCurrentLabel && !primaryCandidate.qualityLabel) {
+    primaryCandidate.qualityLabel = normalizedCurrentLabel;
+  }
+
+  for (const label of explicitLabels) {
+    const normalizedLabel = normalizeVideasyQualityLabel(label);
+    if (candidates.slice(candidateStartIndex).some((entry) => normalizeVideasyQualityLabel(entry?.qualityLabel || '') === normalizedLabel)) {
+      continue;
+    }
+
+    const beforeCount = candidates.length;
+    const clicked = await clickVideasyQuality(page, label);
+    if (!clicked) {
+      continue;
+    }
+
+    const nextCandidate = await waitForVideasyHlsCandidate(page, candidates, 5000, beforeCount);
+    if (nextCandidate) {
+      nextCandidate.qualityLabel = normalizedLabel;
+    }
+
+    await openVideasyQualityMenu(page);
+  }
+
+  const scopedCandidates = candidates.slice(candidateStartIndex);
+  return buildVideasyQualityEntries(labels, scopedCandidates.length ? scopedCandidates : candidates);
+}
+
+function getNavigationTargetUrl(targetUrl = '') {
+  if (!isVidfunUrl(targetUrl)) {
+    return targetUrl;
+  }
+
+  try {
+    const parsed = new URL(String(targetUrl || ''));
+    parsed.searchParams.delete('novaServer');
+    parsed.searchParams.delete('server');
+    return parsed.toString();
+  } catch {
+    return targetUrl;
+  }
+}
+
 function getBootstrapRuntimeTarget(url) {
   if (isVidfastUrl(url)) {
     return {
@@ -445,7 +962,7 @@ function isVideasyUrl(url) {
 }
 
 function isVidzeeUrl(url) {
-  return /player\.vidzee\.wtf\/v2\/embed\//i.test(String(url || ''));
+  return /player\.vidzee\.wtf\/(?:v2\/)?embed\//i.test(String(url || ''));
 }
 
 function isVidkingUrl(url) {
@@ -466,12 +983,41 @@ function getVideasyMediaId(targetUrl) {
   }
 }
 
-function getDefaultUserAgent() {
+// Chrome version MUST match the actual browser launched on this machine.
+// Check `[browser] launched` logs — the real Chrome reports its version in
+// Sec-CH-UA headers during extraction.  Keeping these in sync avoids
+// fingerprint mismatches that upstream WAFs (Cloudflare / Akamai) detect.
+const CHROME_VERSION = '147';
+const CHROME_FULL_VERSION = '147.0.7727.138';
+
+export function getDefaultUserAgent() {
   return (
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
     'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-    'Chrome/120.0.0.0 Safari/537.36'
+    `Chrome/${CHROME_FULL_VERSION} Safari/537.36`
   );
+}
+
+function getVidfunUserAgent() {
+  return getDefaultUserAgent();
+}
+
+/**
+ * Sec-CH-UA Client Hints that match the real Chrome instance.
+ * Modern bot-detection (Cloudflare Turnstile, Akamai) validates these
+ * against the TLS fingerprint and User-Agent.  If they disagree the
+ * request is flagged.
+ */
+export function getRealisticClientHints() {
+  return {
+    'sec-ch-ua': `"Google Chrome";v="${CHROME_VERSION}", "Not(A:Brand";v="99", "Chromium";v="${CHROME_VERSION}"`,
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"macOS"'
+  };
+}
+
+function getExtractionUserAgent(targetUrl) {
+  return isVidfunUrl(targetUrl) ? getVidfunUserAgent() : getDefaultUserAgent();
 }
 
 function createStatusError(message, statusCode, code = message) {
@@ -645,8 +1191,30 @@ function isVidfastResolverUrl(url) {
   return /^https:\/\/vidfast\.(?:pro|in|io|me|net|pm|xyz)\/APA91/i.test(String(url || ''));
 }
 
-function isLikelyStreamUrl(url) {
+function isLikelyHlsSegmentUrl(url) {
+  try {
+    const parsed = new URL(String(url || ''));
+    const pathname = decodeURIComponent(parsed.pathname || '').toLowerCase();
+    if (/\.m3u8(?:$|[?#])/i.test(pathname)) {
+      return false;
+    }
+
+    return (
+      /\.(?:ts|m4s|cmfv|cmfa)(?:$|[?#])/i.test(pathname) ||
+      /\/(?:seg|segment|frag|fragment|chunk|part)[-_]?\d/i.test(pathname) ||
+      pathname.includes('/hls/')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isLikelyStreamUrl(url, options = {}) {
   const value = String(url || '');
+  if (options.ignoreHlsSegments && isLikelyHlsSegmentUrl(value)) {
+    return false;
+  }
+
   if (NON_STREAM_ASSET_PATTERNS.some((pattern) => pattern.test(value))) {
     return false;
   }
@@ -775,7 +1343,7 @@ async function clickFirstVisible(frame, selectors) {
 }
 
 async function pokePlayers(page, targetUrl) {
-  const isAggressiveTarget = isVidfastUrl(targetUrl) || isVidzeeUrl(targetUrl);
+  const isAggressiveTarget = isVidfastUrl(targetUrl) || isVidzeeUrl(targetUrl) || isVidfunUrl(targetUrl) || isVidlinkUrl(targetUrl);
   const selectors = [
     'button',
     '.play',
@@ -823,8 +1391,89 @@ async function pokePlayers(page, targetUrl) {
   }
 }
 
+async function selectVidfunServer(page, targetUrl) {
+  const serverName = getRequestedVidfunServer(targetUrl);
+  if (!serverName) {
+    return false;
+  }
+
+  try {
+    await page.locator('button[aria-label="Servers"]').first()
+      .waitFor({ state: 'attached', timeout: 15000 })
+      .catch(() => undefined);
+
+    await page.mouse.move(640, 650).catch(() => undefined);
+
+    const startedAt = Date.now();
+    let availableServers = [];
+
+    while (Date.now() - startedAt < 18000) {
+      const state = await page.evaluate((targetServer) => {
+        const normalize = (value) => String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+        const target = normalize(targetServer);
+        const buttons = [...document.querySelectorAll('button')]
+          .map((button) => ({
+            button,
+            label: String(button.innerText || button.textContent || '').trim().replace(/\s+/g, ' '),
+            aria: String(button.getAttribute('aria-label') || '').trim()
+          }));
+        const serverLabels = buttons
+          .map((entry) => entry.label)
+          .filter(Boolean);
+        const serverButton = buttons.find((entry) => normalize(entry.label) === target)?.button;
+
+        if (serverButton) {
+          serverButton.scrollIntoView({ block: 'center', inline: 'nearest' });
+          serverButton.click();
+          return { clicked: true, menuOpen: true, serverLabels };
+        }
+
+        const menuOpen = /select a server/i.test(document.body?.innerText || '') ||
+          Boolean(document.querySelector('[aria-label="Server Selector"]'));
+        return { clicked: false, menuOpen, serverLabels };
+      }, serverName).catch(() => ({ clicked: false, menuOpen: false, serverLabels: [] }));
+
+      availableServers = state.serverLabels || [];
+
+      if (state.clicked) {
+        console.log(new Date().toISOString(), '[vidfun] selected server', serverName);
+        await page.keyboard.press('Escape').catch(() => undefined);
+        await page.waitForTimeout(800).catch(() => undefined);
+        return true;
+      }
+
+      if (!state.menuOpen) {
+        const openClicked = await page.locator('button[aria-label="Servers"]').first().click({ timeout: 1500, force: true })
+          .then(() => true)
+          .catch(() => false);
+
+        if (!openClicked) {
+          await page.evaluate(() => {
+            [...document.querySelectorAll('button')]
+              .find((button) => button.getAttribute('aria-label') === 'Servers')
+              ?.click();
+          }).catch(() => undefined);
+        }
+      }
+
+      await page.waitForTimeout(700).catch(() => undefined);
+    }
+
+    console.log(
+      new Date().toISOString(),
+      '[vidfun] server option not found',
+      serverName,
+      availableServers.length ? `available=${availableServers.join(', ')}` : 'available=none'
+    );
+    return false;
+  } catch (error) {
+    console.log(new Date().toISOString(), '[vidfun] server select failed', serverName, error?.message || String(error));
+    return false;
+  }
+}
+
 async function installVidfastHooks(page, targetUrl) {
-  if (!isVidfastUrl(targetUrl)) {
+  if (!isVidfastUrl(targetUrl) && !isVidcoreUrl(targetUrl)) {
     return;
   }
 
@@ -1285,6 +1934,7 @@ async function waitForProtectedRuntime(page, targetUrl, timeoutMs = 12000) {
 
 export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   console.log(new Date().toISOString(), '[extractor] starting', targetUrl);
+  const navigationUrl = getNavigationTargetUrl(targetUrl);
   const expectedVidfastPath = getExpectedVidfastPath(targetUrl);
   const now = Date.now();
   const vidfastStorageState =
@@ -1292,10 +1942,7 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 
   const context = await createBrowserContext({
     bypassCSP: true,
-    userAgent:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
-      'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-      'Chrome/120.0.0.0 Safari/537.36',
+    userAgent: getExtractionUserAgent(targetUrl),
     viewport: { width: 1280, height: 720 },
     storageState: vidfastStorageState
   }, options);
@@ -1314,6 +1961,8 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   let firstResultResolved = false;
   let lastRelevantActivityAt = Date.now();
   const vidfastResolverHints = [];
+  const vidfunHlsCandidates = [];
+  const videasyHlsCandidates = [];
   let protectedRuntimeReadyPromise = null;
   const videasyApiStatuses = [];
   const getVideasyUpstreamBlockError = () => {
@@ -1372,6 +2021,44 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     }
   };
 
+  const rememberVidfunHlsCandidate = (entry) => {
+    if (!isVidfunUrl(targetUrl) || !entry?.url || !isVidfunHlsResult(entry)) {
+      return;
+    }
+
+    if (vidfunHlsCandidates.some((item) => item.url === entry.url)) {
+      return;
+    }
+
+    vidfunHlsCandidates.push({
+      ...entry,
+      type: 'HLS'
+    });
+
+    if (vidfunHlsCandidates.length > 12) {
+      vidfunHlsCandidates.shift();
+    }
+  };
+
+  const rememberVideasyHlsCandidate = (entry) => {
+    if (!isVideasyUrl(targetUrl) || !entry?.url || !isVideasyHlsResult(entry)) {
+      return;
+    }
+
+    if (videasyHlsCandidates.some((item) => item.url === entry.url)) {
+      return;
+    }
+
+    videasyHlsCandidates.push({
+      ...entry,
+      type: 'HLS'
+    });
+
+    if (videasyHlsCandidates.length > 16) {
+      videasyHlsCandidates.shift();
+    }
+  };
+
   const emitFound = async (result) => {
     const enrichedResult = await enrichPlaybackResult(targetUrl, result, context);
 
@@ -1420,16 +2107,23 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       return;
     }
 
-    if (isLikelyStreamUrl(requestUrl)) {
+    if (isLikelyStreamUrl(requestUrl, { ignoreHlsSegments: isVideasyUrl(targetUrl) })) {
       const via = isVideasyUrl(targetUrl) ? 'videasy-request' : 'vidking-request';
       console.log(new Date().toISOString(), `[${via}:media]`, resourceType, requestUrl);
-      emitFound({
+      const result = {
         url: requestUrl,
         type: detectType(requestUrl, request.headers()['content-type'] || ''),
         headers: request.headers(),
         foundAt: new Date().toISOString(),
         via
-      }).catch(() => undefined);
+      };
+
+      if (isVideasyUrl(targetUrl) && isVideasyHlsResult(result)) {
+        rememberVideasyHlsCandidate(result);
+        return;
+      }
+
+      emitFound(result).catch(() => undefined);
     }
   });
 
@@ -1440,9 +2134,9 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   page.on('response', async (response) => {
     if (isVideasyUrl(targetUrl)) {
       const responseUrl = response.url();
-      if (isLikelyStreamUrl(responseUrl) && !stopIfResolved()) {
+      if (isLikelyStreamUrl(responseUrl, { ignoreHlsSegments: true }) && !stopIfResolved()) {
         console.log(new Date().toISOString(), '[videasy:response-media]', response.status(), responseUrl);
-        await emitFound({
+        const result = {
           url: responseUrl,
           type: detectType(responseUrl, response.headers()['content-type'] || ''),
           headers: {
@@ -1451,7 +2145,16 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
           },
           foundAt: new Date().toISOString(),
           via: 'videasy-response'
-        }).catch(() => undefined);
+        };
+
+        if (isVideasyHlsResult(result)) {
+          rememberVideasyHlsCandidate(result);
+          // Keep the page open so the quality menu can be inspected before
+          // selecting a final playback URL. Emitting here closes the page early.
+          return;
+        }
+
+        await emitFound(result).catch(() => undefined);
         return;
       }
     }
@@ -1507,24 +2210,8 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
           }
         }
 
-        if (!streamUrl) {
-          return;
-        }
-
-        onFound({
-          url: streamUrl,
-          type: detectType(streamUrl, response.headers()['content-type'] || ''),
-          headers: {
-            ...response.request().headers(),
-            ...response.headers()
-          },
-          foundAt: new Date().toISOString(),
-          via: 'videasy-browser-api'
-        });
-
-        if (!firstResultResolved) {
-          firstResultResolved = true;
-          await page.close().catch(() => undefined);
+        if (streamUrl) {
+          console.log(new Date().toISOString(), '[videasy:api] decrypted stream ignored; waiting for player media request', streamUrl);
         }
       } catch (error) {
         console.log(new Date().toISOString(), '[videasy:api:error]', url, error?.message || String(error));
@@ -1606,6 +2293,16 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
   await installVidfastHooks(page, targetUrl);
 
   await setupInterceptors(page, targetUrl, async (result) => {
+    if (isVidfunUrl(targetUrl)) {
+      rememberVidfunHlsCandidate(result);
+      return;
+    }
+
+    if (isVideasyUrl(targetUrl) && isVideasyHlsResult(result)) {
+      rememberVideasyHlsCandidate(result);
+      return;
+    }
+
     await emitFound(result);
   });
 
@@ -1614,10 +2311,20 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       console.log(new Date().toISOString(), '[vidfast] reusing cached session state');
     }
 
-    await page.goto(targetUrl, {
-      waitUntil: isVidkingUrl(targetUrl) ? 'networkidle' : 'domcontentloaded',
-      timeout: options.navigationTimeout ?? 30000
-    });
+    if (isMegaplayUrl(targetUrl)) {
+      await page.setContent(`<html><body style="margin:0;overflow:hidden">
+        <iframe src="${navigationUrl}" width="100%" height="100%" frameborder="0"
+          scrolling="no" allowfullscreen
+          style="position:fixed;top:0;left:0;width:100%;height:100%;border:none">
+        </iframe>
+      </body></html>`);
+      await page.waitForTimeout(3000);
+    } else {
+      await page.goto(navigationUrl, {
+        waitUntil: isVidkingUrl(targetUrl) ? 'networkidle' : 'domcontentloaded',
+        timeout: options.navigationTimeout ?? 30000
+      });
+    }
 
     if (isVideasyUrl(targetUrl)) {
       await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => undefined);
@@ -1627,14 +2334,14 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       const currentPath = getExpectedVidfastPath(page.url());
       if (currentPath && currentPath !== expectedVidfastPath) {
         console.log(new Date().toISOString(), '[vidfast] unexpected redirect', page.url());
-        await page.goto(targetUrl, {
+        await page.goto(navigationUrl, {
           waitUntil: 'domcontentloaded',
           timeout: options.navigationTimeout ?? 30000
         });
       }
     }
 
-    console.log(new Date().toISOString(), '[extractor] page loaded', targetUrl);
+    console.log(new Date().toISOString(), '[extractor] page loaded', navigationUrl);
 
     await logVidfastPageState(page, targetUrl);
     await patchVidfastVisibility(page, targetUrl);
@@ -1651,6 +2358,25 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
 
     if (stopIfResolved()) {
       return;
+    }
+
+    if (isVidfunUrl(targetUrl)) {
+      const selectedRequestedServer = await selectVidfunServer(page, targetUrl);
+      const preferredCandidateStartIndex = selectedRequestedServer ? vidfunHlsCandidates.length : 0;
+      const qualities = await collectVidfunQualityEntries(page, targetUrl, vidfunHlsCandidates, preferredCandidateStartIndex);
+      const serverCandidates = vidfunHlsCandidates.slice(preferredCandidateStartIndex).filter((entry) => isVidfunHlsResult(entry));
+      const fallbackCandidates = serverCandidates.length ? serverCandidates : vidfunHlsCandidates.filter((entry) => isVidfunHlsResult(entry));
+      const primaryCandidate = fallbackCandidates[0];
+
+      if (primaryCandidate) {
+        await emitFound({
+          ...primaryCandidate,
+          type: 'HLS',
+          via: primaryCandidate.via || 'vidfun-quality',
+          qualities
+        });
+        return;
+      }
     }
 
     await pokePlayers(page, targetUrl);
@@ -1673,6 +2399,18 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       await primeVideasyPlayer(page, targetUrl);
       await waitForNetworkSettle(2000, 12000, 2000);
 
+      const qualities = await collectVideasyQualityEntries(page, targetUrl, videasyHlsCandidates);
+      const primaryCandidate = videasyHlsCandidates.find((entry) => isVideasyHlsResult(entry));
+      if (primaryCandidate && !stopIfResolved()) {
+        await emitFound({
+          ...primaryCandidate,
+          type: 'HLS',
+          via: primaryCandidate.via || 'videasy-quality',
+          qualities
+        });
+        return;
+      }
+
       if (getVideasyUpstreamBlockError()) {
         console.log(new Date().toISOString(), '[videasy] upstream api blocked, continuing browser media capture');
       }
@@ -1682,6 +2420,21 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       await safeWait(2500);
       await primeVidzeePlayer(page, targetUrl);
       await waitForNetworkSettle(2500, 15000, 3000);
+    }
+
+    if (!stopIfResolved() && isMegaplayUrl(targetUrl)) {
+      await safeWait(2000);
+      const megaplayFrame = page.frames().find((frame) => /megaplay\.buzz/i.test(frame.url()));
+      const frameTarget = megaplayFrame || page;
+      await frameTarget.evaluate(() => {
+        const video = document.querySelector('video');
+        if (video && typeof video.play === 'function') {
+          video.muted = true;
+          video.play().catch(() => undefined);
+        }
+        try { if (window.jwplayer) window.jwplayer().play().catch(() => undefined); } catch {}
+      }).catch(() => undefined);
+      await waitForNetworkSettle(3000, 18000, 6000);
     }
 
     if (!stopIfResolved() && isVidcoreUrl(targetUrl)) {
@@ -1723,10 +2476,11 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
     }
 
     if (!stopIfResolved()) {
+      const isSlowTarget = isVidfastUrl(targetUrl) || isVidlinkUrl(targetUrl) || isMegaplayUrl(targetUrl);
       await waitForNetworkSettle(
-        options.settleTimeout ?? (isVidfastUrl(targetUrl) ? 3000 : 2000),
-        options.maxWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 18000 : 10000),
-        options.minWaitAfterLoad ?? (isVidfastUrl(targetUrl) ? 4000 : 5000)
+        options.settleTimeout ?? (isSlowTarget ? 3000 : 2000),
+        options.maxWaitAfterLoad ?? (isSlowTarget ? 18000 : 10000),
+        options.minWaitAfterLoad ?? (isSlowTarget ? 4000 : 5000)
       );
     }
 
@@ -1741,20 +2495,18 @@ export async function extractVideoUrls(targetUrl, onFound, options = {}) {
       await waitForNetworkSettle(2500, 8000, 1500);
     }
 
-    if (!stopIfResolved() && isVidfastUrl(targetUrl)) {
-      const vidfastResult = await inspectVidfastPayloads(page);
-      if (vidfastResult) {
-        onFound(vidfastResult);
-        firstResultResolved = true;
-        await page.close().catch(() => undefined);
-        return;
+    if (!stopIfResolved() && getBootstrapRuntimeTarget(targetUrl)) {
+      const protectedPayloadResult = await inspectVidfastPayloads(page);
+      if (protectedPayloadResult) {
+        await emitFound(protectedPayloadResult);
+        if (stopIfResolved()) {
+          return;
+        }
       }
 
       const runtimeResult = await inspectVidfastRuntime(page);
       if (runtimeResult) {
-        onFound(runtimeResult);
-        firstResultResolved = true;
-        await page.close().catch(() => undefined);
+        await emitFound(runtimeResult);
       }
     }
   } catch (error) {

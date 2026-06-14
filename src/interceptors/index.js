@@ -34,11 +34,130 @@ const VIDEO_CONTENT_TYPES = [
 
 const NON_STREAM_ASSET_PATTERNS = [
   /(?:^|\/)_(?:build|ssg|middleware)manifest\.js(?:\?|$)/i,
-  /\.(?:js|mjs|cjs|css|map|json|txt|svg|png|jpe?g|gif|webp|ico|woff2?|ttf)(?:\?|$)/i,
+  /\.(?:js|mjs|cjs|css|map|json|txt|svg|png|jpe?g|gif|webp|ico|wasm|woff2?|ttf)(?:\?|$)/i,
   /\/favicon\.ico(?:\?|$)/i
 ];
 
-const PAYLOAD_URL_REGEX = /https?:\/\/[^"'\s<>()]+/gi;
+function normalizeEscapedPayloadUrl(value = '') {
+  return String(value || '')
+    .replace(/\\u0026/g, '&')
+    .replace(/\\\//g, '/')
+    .replace(/\\"/g, '"')
+    .replace(/&amp;/g, '&')
+    .trim();
+}
+
+function collectJsonStringValues(value, out = []) {
+  if (typeof value === 'string') {
+    out.push(value);
+    return out;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectJsonStringValues(entry, out);
+    }
+    return out;
+  }
+
+  if (value && typeof value === 'object') {
+    for (const entry of Object.values(value)) {
+      collectJsonStringValues(entry, out);
+    }
+  }
+
+  return out;
+}
+
+function extractUrlLikeTokens(text = '') {
+  const source = String(text || '');
+  const urls = [];
+  let index = 0;
+
+  while (index < source.length) {
+    const start = source.indexOf('http', index);
+    if (start === -1) {
+      break;
+    }
+
+    let end = start;
+    while (end < source.length) {
+      const char = source[end];
+      const previous = end > start ? source[end - 1] : '';
+      if (/\s|[<>()]/.test(char) || char === "'" || (char === '"' && previous !== '\\')) {
+        break;
+      }
+      end += 1;
+    }
+
+    urls.push(source.slice(start, end));
+    index = Math.max(end, start + 1);
+  }
+
+  return urls;
+}
+
+function hasValidEmbeddedHeaders(candidate = '') {
+  try {
+    const parsed = new URL(candidate);
+    const embedded = parsed.searchParams.get('__proxy_headers') || parsed.searchParams.get('headers');
+    if (!embedded) {
+      return true;
+    }
+
+    let decoded = embedded;
+    try {
+      decoded = decodeURIComponent(embedded);
+    } catch {}
+
+    decoded = normalizeEscapedPayloadUrl(decoded);
+    if (!decoded || decoded === '{' || decoded === '{\\') {
+      return false;
+    }
+
+    JSON.parse(decoded);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isStreamCandidate(candidate = '') {
+  const value = normalizeEscapedPayloadUrl(candidate);
+  return !!value && !isNonStreamAssetUrl(value) && hasValidEmbeddedHeaders(value) && VIDEO_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+function getStreamCandidateRank(candidate = '') {
+  const value = normalizeEscapedPayloadUrl(candidate).toLowerCase();
+  if (/\.m3u8($|[?#])/i.test(value) || /playlist\.m3u8/i.test(value) || /master\.m3u8/i.test(value) || /index\.m3u8/i.test(value)) {
+    return 0;
+  }
+  if (/\.mpd($|[?#])/i.test(value)) {
+    return 1;
+  }
+  if (/\.(mp4|m4v)($|[?#])/i.test(value)) {
+    return 2;
+  }
+  return 3;
+}
+
+function pickBestStreamCandidate(candidates = []) {
+  const normalized = candidates
+    .map((candidate) => normalizeEscapedPayloadUrl(candidate))
+    .filter(isStreamCandidate);
+
+  normalized.sort((a, b) => getStreamCandidateRank(a) - getStreamCandidateRank(b));
+  return normalized[0] || null;
+}
+
+function isMegaplayEmbedPage(url) {
+  try {
+    const parsed = new URL(url);
+    return /(^|\.)megaplay\.buzz$/i.test(parsed.hostname) && /^\/stream\/(ani|mal)\//i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
 
 function normalizeUrlKey(url) {
   return String(url || '').split('?')[0].toLowerCase();
@@ -56,7 +175,7 @@ export function createDetectorState() {
 
 export function isVideoUrl(url, state) {
   const key = normalizeUrlKey(url);
-  if (!key || /\.ts$/i.test(key) || isNonStreamAssetUrl(key) || state.seen.has(key)) {
+  if (!key || /\.ts$/i.test(key) || isNonStreamAssetUrl(key) || !hasValidEmbeddedHeaders(url) || state.seen.has(key) || isMegaplayEmbedPage(url)) {
     return false;
   }
 
@@ -95,32 +214,25 @@ export function extractStreamFromPayload(payload) {
 
   try {
     const parsed = JSON.parse(text);
-    const candidate =
+    const primaryCandidate = pickBestStreamCandidate([
       parsed?.stream?.playlist ||
       parsed?.stream?.url ||
       parsed?.playlist ||
       parsed?.url ||
-      parsed?.file;
+      parsed?.file
+    ]);
 
-    if (candidate && !isNonStreamAssetUrl(candidate) && VIDEO_PATTERNS.some((pattern) => pattern.test(candidate))) {
-      return candidate;
+    if (primaryCandidate) {
+      return primaryCandidate;
+    }
+
+    const nestedCandidate = pickBestStreamCandidate(collectJsonStringValues(parsed));
+    if (nestedCandidate) {
+      return nestedCandidate;
     }
   } catch {
-    // Fall back to regex extraction below.
+    // Fall back to scanning non-JSON payloads below.
   }
 
-  const matches = text.match(PAYLOAD_URL_REGEX) || [];
-
-  for (const match of matches) {
-    const candidate = match
-      .replace(/\\u0026/g, '&')
-      .replace(/\\\//g, '/')
-      .replace(/\\"/g, '"');
-
-    if (!isNonStreamAssetUrl(candidate) && VIDEO_PATTERNS.some((pattern) => pattern.test(candidate))) {
-      return candidate;
-    }
-  }
-
-  return null;
+  return pickBestStreamCandidate(extractUrlLikeTokens(text));
 }

@@ -6,9 +6,16 @@ const BLOCKED_URL_PATTERNS = [
   'googletagmanager.com',
   'doubleclick.net',
   'umami.',
-  '/cdn-cgi/rum',
   'mc.yandex.ru',
   'f.clarity.ms'
+];
+
+const VIDLINK_BLOCKED_URL_PATTERNS = [
+  'adsco.re',
+  'brightadnetwork.com',
+  'intellipopup.com',
+  'togotosleepbutju.com',
+  'ukankingwithea.com'
 ];
 
 const RUNTIME_PATCH_TEMPLATES = [
@@ -91,6 +98,31 @@ function isVideasyUrl(url) {
   return /player\.videasy\.net/i.test(String(url || ''));
 }
 
+function isVidlinkUrl(url) {
+  try {
+    return /(^|\.)vidlink\.pro$/i.test(new URL(String(url || '')).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isMegaplayUrl(url) {
+  try {
+    return /(^|\.)megaplay\.buzz$/i.test(new URL(String(url || '')).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isMegaplaySourcesApiUrl(url) {
+  try {
+    const parsed = new URL(String(url || ''));
+    return /(^|\.)megaplay\.buzz$/i.test(parsed.hostname) && parsed.pathname === '/stream/getSources';
+  } catch {
+    return false;
+  }
+}
+
 function getRuntimePatchTarget(targetUrl) {
   if (isVidfastUrl(targetUrl)) {
     return {
@@ -108,6 +140,18 @@ function getRuntimePatchTarget(targetUrl) {
       apKey: '__VIDCORE_AP__',
       bypassKey: '__VIDCORE_BYPASS__'
     };
+  }
+
+  return null;
+}
+
+function getProtectedRuntimeHostPattern(targetUrl) {
+  if (isVidfastUrl(targetUrl)) {
+    return /(^|\.)vidfast\.(pro|in|io|me|net|pm|xyz)$/i;
+  }
+
+  if (isVidcoreUrl(targetUrl)) {
+    return /(^|\.)vidcore\.net$/i;
   }
 
   return null;
@@ -131,7 +175,8 @@ function shouldBlockVideasyNavigation(targetUrl, request) {
 }
 
 function shouldBlockVidfastNavigation(targetUrl, request) {
-  if (!isVidfastUrl(targetUrl)) {
+  const allowedHostPattern = getProtectedRuntimeHostPattern(targetUrl);
+  if (!allowedHostPattern) {
     return false;
   }
 
@@ -141,38 +186,39 @@ function shouldBlockVidfastNavigation(targetUrl, request) {
 
   try {
     const requestHost = new URL(request.url()).hostname;
-    return !/(^|\.)vidfast\.(pro|in|io|me|net|pm|xyz)$/i.test(requestHost);
+    return !allowedHostPattern.test(requestHost);
   } catch {
     return false;
   }
 }
 
 function shouldBlockVidfastScript(targetUrl, request) {
-  if (!isVidfastUrl(targetUrl) || request.resourceType() !== 'script') {
+  const allowedHostPattern = getProtectedRuntimeHostPattern(targetUrl);
+  if (!allowedHostPattern || request.resourceType() !== 'script') {
     return false;
   }
 
   try {
     const requestHost = new URL(request.url()).hostname;
-    if (requestHost === 'umami.vidfast.pro') {
+    if (/^umami\./i.test(requestHost)) {
       return true;
     }
 
-    return !/(^|\.)vidfast\.(pro|in|io|me|net|pm|xyz)$/i.test(requestHost);
+    return !allowedHostPattern.test(requestHost);
   } catch {
     return false;
   }
 }
 
 function shouldBlockVidfastRequest(targetUrl, request) {
-  if (!isVidfastUrl(targetUrl)) {
+  if (!isVidfastUrl(targetUrl) && !isVidcoreUrl(targetUrl)) {
     return false;
   }
 
   try {
     const parsed = new URL(request.url());
     return (
-      parsed.hostname === 'umami.vidfast.pro' ||
+      /^umami\./i.test(parsed.hostname) ||
       parsed.hostname === 'www.gstatic.com'
     );
   } catch {
@@ -253,6 +299,8 @@ export async function setupInterceptors(page, targetUrl, onFound) {
   const state = createDetectorState();
   const context = page.context();
   const isVidfastTarget = isVidfastUrl(targetUrl);
+  const isVidlinkTarget = isVidlinkUrl(targetUrl);
+  const isMegaplayTarget = isMegaplayUrl(targetUrl);
 
   await context.route('**/*', async (route) => {
     const request = route.request();
@@ -264,7 +312,7 @@ export async function setupInterceptors(page, targetUrl, onFound) {
     }
 
     if (shouldBlockVidfastNavigation(targetUrl, request)) {
-      console.log(new Date().toISOString(), '[vidfast] blocked navigation', url);
+      console.log(new Date().toISOString(), '[protected-runtime] blocked navigation', url);
       await route.abort().catch(() => undefined);
       return;
     }
@@ -276,18 +324,23 @@ export async function setupInterceptors(page, targetUrl, onFound) {
     }
 
     if (shouldBlockVidfastScript(targetUrl, request)) {
-      console.log(new Date().toISOString(), '[vidfast] blocked script', url);
+      console.log(new Date().toISOString(), '[protected-runtime] blocked script', url);
       await route.abort().catch(() => undefined);
       return;
     }
 
     if (shouldBlockVidfastRequest(targetUrl, request)) {
-      console.log(new Date().toISOString(), '[vidfast] blocked request', url);
+      console.log(new Date().toISOString(), '[protected-runtime] blocked request', url);
       await route.abort().catch(() => undefined);
       return;
     }
 
     if (await maybePatchRuntimeScript(route, targetUrl).catch(() => false)) {
+      return;
+    }
+
+    if (isVidlinkTarget && VIDLINK_BLOCKED_URL_PATTERNS.some((pattern) => url.includes(pattern))) {
+      await route.abort().catch(() => undefined);
       return;
     }
 
@@ -302,8 +355,8 @@ export async function setupInterceptors(page, targetUrl, onFound) {
     }
 
     if (
-      (!isVidfastTarget && BLOCKED_RESOURCE_TYPES.has(resourceType)) ||
-      (!isVidfastTarget && BLOCKED_URL_PATTERNS.some((pattern) => url.includes(pattern)))
+      (!isVidfastTarget && !isMegaplayTarget && !isVideasyUrl(targetUrl) && BLOCKED_RESOURCE_TYPES.has(resourceType)) ||
+      (!isVidfastTarget && !isVideasyUrl(targetUrl) && BLOCKED_URL_PATTERNS.some((pattern) => url.includes(pattern)))
     ) {
       await route.abort().catch(() => undefined);
       return;
